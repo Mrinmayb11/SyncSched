@@ -5,27 +5,30 @@ import * as cheerio from 'cheerio';
  * @param {string} htmlString - The HTML string to convert.
  * @returns {Array<object>} - An array of Notion block objects.
  */
-function convertHtmlToNotionBlocks(htmlString) {
-  if (typeof htmlString !== 'string') {
-    console.error("Invalid input: Expected an HTML string.");
-    return [];
-  }
+// This top-level function seems unused now? The exported one is convertHtmlToNotionBlocksInternal
+// function convertHtmlToNotionBlocks(htmlString) { 
+//   if (typeof htmlString !== 'string') {
+//     console.error("Invalid input: Expected an HTML string.");
+//     return [];
+//   }
 
-  try {
-    const $ = cheerio.load(htmlString);
-    const blocks = [];
-    const rootElements = $.root().children();
+//   try {
+//     const $ = cheerio.load(htmlString);
+//     const blocks = [];
+//     const rootElements = $.root().children();
 
-    rootElements.each((index, element) => {
-      blocks.push(...convertElementToNotionBlock($, element));
-    });
+//     rootElements.each((index, element) => {
+//       blocks.push(...convertElementToNotionBlock($, element));
+//     });
 
-    return groupListItems(blocks);
-  } catch (error) {
-    console.error("Error parsing HTML:", error);
-    return [];
-  }
-}
+//     // This function is not defined in the current code.
+//     // return groupListItems(blocks); 
+//     return blocks; // Returning blocks directly as groupListItems is missing
+//   } catch (error) {
+//     console.error("Error parsing HTML:", error);
+//     return [];
+//   }
+// }
 
 /**
  * Recursively converts a Cheerio element and its children into Notion block objects.
@@ -34,19 +37,15 @@ function convertHtmlToNotionBlocks(htmlString) {
  * @returns {Array<object>} - An array of Notion block objects.
  */
 function convertElementToNotionBlock($, element) {
-  // <<< Log Entry and Element Type >>>
-  console.log(`[HTML->Notion] ENTERING convertElementToNotionBlock for element: <${element?.tagName || 'unknown'}>`);
-  // <<< End Log >>>
-
   const tagName = element.tagName?.toLowerCase();
-  const blocks = [];
+  let blocks = [];
 
   switch (tagName) {
     case 'p':
       const pRichText = convertNodeToRichText($, element);
-      // Avoid creating empty blocks if paragraph only contains whitespace or <br> generated newlines
-      if (pRichText.length > 0 && pRichText.some(rt => rt.text?.content?.trim() || (rt.type === 'text' && rt.text?.content === '\\n'))) {
-          console.log(`  [HTML->Notion] Creating Paragraph block for <${tagName}>`); // Log block creation
+      // Avoid creating empty blocks (whitespace or ZWJ)
+      const pTextContent = pRichText.map(rt => rt.text?.content || '').join('');
+      if (pTextContent.trim() && pTextContent !== '\u200D') {
           blocks.push({
             object: 'block',
             type: 'paragraph',
@@ -60,15 +59,36 @@ function convertElementToNotionBlock($, element) {
     case 'h1':
     case 'h2':
     case 'h3':
+      // Note: h4, h5, h6 are not standard Notion block types, converting them would require mapping to paragraph/bold or similar.
       const headingLevel = parseInt(tagName.substring(1), 10);
       const headingRichText = convertNodeToRichText($, element);
        if (headingRichText.length > 0) {
-         console.log(`  [HTML->Notion] Creating Heading ${headingLevel} block for <${tagName}>`); // Log block creation
          blocks.push({
            object: 'block',
            type: `heading_${headingLevel}`,
            [`heading_${headingLevel}`]: {
              rich_text: headingRichText,
+           },
+         });
+       }
+      break;
+    
+    // Added h4, h5, h6 handling - convert to bold paragraphs
+    case 'h4':
+    case 'h5':
+    case 'h6':
+        const fauxHeadingRichText = convertNodeToRichText($, element);
+        if (fauxHeadingRichText.length > 0) {
+            // Apply bold annotation to all text segments
+            const boldedRichText = fauxHeadingRichText.map(rt => ({
+                ...rt,
+                annotations: { ...(rt.annotations || {}), bold: true }
+            }));
+            blocks.push({
+                object: 'block',
+                type: 'paragraph',
+                paragraph: {
+                    rich_text: boldedRichText,
            },
          });
        }
@@ -86,6 +106,7 @@ function convertElementToNotionBlock($, element) {
       const nestedListElements = $(element).children('ul, ol');
 
       // Create a temporary wrapper for direct content to pass to convertNodeToRichText
+      // This ensures proper handling of mixed inline content directly within the <li>
       const $tempWrapper = $('<div></div>');
       liContentNodes.each((_, node) => $tempWrapper.append($(node).clone()));
       const liRichText = convertNodeToRichText($, $tempWrapper.get(0));
@@ -93,39 +114,34 @@ function convertElementToNotionBlock($, element) {
       // Process nested list elements recursively to get child blocks
       let nestedChildrenBlocks = [];
       nestedListElements.each((_, nestedList) => {
-          // Each child of the nested list (li) needs to be processed
           $(nestedList).children('li').each((__, nestedLi) => {
               nestedChildrenBlocks.push(...convertElementToNotionBlock($, nestedLi));
           });
       });
 
-      console.log(`  [HTML->Notion] PREP List Item (${itemType}):`);
-      console.log(`    Rich Text: ${JSON.stringify(liRichText)}`);
-      console.log(`    Nested Children Count: ${nestedChildrenBlocks.length}`);
-      if (nestedChildrenBlocks.length > 0) {
-          console.log(`    Nested Children Blocks: ${JSON.stringify(nestedChildrenBlocks)}`);
-      }
-
-      console.log(`  [HTML->Notion] Creating List Item block (${itemType})`);
+      // Only create list item if it has text content or nested children
+      const liTextContent = liRichText.map(rt => rt.text?.content || '').join('');
+      if(liTextContent.trim() || nestedChildrenBlocks.length > 0) {
       blocks.push({
           object: 'block',
           type: itemType,
           [itemType]: {
               rich_text: liRichText.length > 0 ? liRichText : [{type: 'text', text: {content: ''}}], // Notion requires rich_text
-              // Directly assign recursively converted nested blocks as children
+                  // Notion API expects nested list items as 'children' of their parent list item block
               children: nestedChildrenBlocks.length > 0 ? nestedChildrenBlocks : undefined 
           },
       });
+      }
       break;
 
     case 'img':
       const src = $(element).attr('src');
       const alt = $(element).attr('alt') || ''; // Use alt text
+      // Find caption associated with this image (likely inside a parent figure)
       const figcaption = $(element).closest('figure').find('figcaption').first();
       const captionText = figcaption.length ? convertNodeToRichText($, figcaption.get(0)) : [];
 
       if (src) {
-        console.log(`  [HTML->Notion] Creating Image block for <img>`); // Log block creation
         blocks.push({
           object: 'block',
           type: 'image',
@@ -134,21 +150,61 @@ function convertElementToNotionBlock($, element) {
             external: {
               url: src,
             },
-             caption: captionText.length > 0 ? captionText : undefined, // Add caption if exists
+             caption: captionText.length > 0 ? captionText : undefined,
           },
         });
       }
       break;
       
-    case 'figure': // Handle figure containing img, avoid duplicate image blocks
-        if ($(element).find('img').length > 0) {
-             // Process the img within the figure
+    case 'figure': // Handle figure containing img, video, or embed
+        // 1. Check if it's a Webflow video/embed figure
+        if ($(element).hasClass('w-richtext-figure-type-video')) {
+            const pageUrl = $(element).attr('data-page-url');
+            const iframe = $(element).find('iframe').first();
+            const iframeSrc = iframe.length ? iframe.attr('src') : null;
+            
+            let embedUrl = pageUrl;
+            // Extract original URL from embedly iframe if possible
+            if (!embedUrl && iframeSrc && iframeSrc.includes('cdn.embedly.com')) {
+                 try {
+                    const embedlyUrl = new URL(iframeSrc);
+                    const originalUrl = embedlyUrl.searchParams.get('url');
+                    if (originalUrl) embedUrl = originalUrl;
+                 } catch (e) { /* Ignore URL parsing errors */ }
+            }
+            if (!embedUrl) embedUrl = iframeSrc; // Fallback to raw iframe src
+
+            if (embedUrl) {
+                // Map to Notion video or embed block
+
+                // 1. Check for YouTube/Vimeo video URLs
+                if (embedUrl.includes('youtube.com') || embedUrl.includes('vimeo.com') ||  embedUrl.includes('youtu.be')) {
+                    // Create Notion Video block
+                    blocks.push({
+                        object: 'block', type: 'video',
+                        video: { type: 'external', external: { url: embedUrl } }
+                    });
+                }
+                 // 2. Fallback to generic Embed block for everything else (Spotify, SoundCloud, Maps, Figma, etc.)
+                else {
+                     blocks.push({
+                         object: 'block', type: 'embed',
+                         embed: { url: embedUrl }
+                     });
+                }
+            }
+            // Return early to prevent processing this figure as an image/paragraph
+            return blocks; 
+        }
+        // 2. If not a video/embed figure, check for an image (handle img tag directly)
+        else if ($(element).find('img').length > 0) {
+            // Process the nested img tag instead of the figure itself
             blocks.push(...convertElementToNotionBlock($, $(element).find('img').get(0)));
-        } else {
-            // Treat figure without img as a generic container (maybe paragraph?)
+        } 
+        // 3. If figure contains neither video/embed class nor img, treat as paragraph (e.g., for block captions or other content)
+        else {
             const figureRichText = convertNodeToRichText($, element);
-             if (figureRichText.length > 0) {
-                console.log(`  [HTML->Notion] Creating Paragraph block for <figure>`); // Log block creation
+             if (figureRichText.length > 0 && figureRichText.some(rt => rt.text?.content?.trim())) {
                 blocks.push({
                     object: 'block',
                     type: 'paragraph',
@@ -158,57 +214,47 @@ function convertElementToNotionBlock($, element) {
                 });
             }
         }
-        break;
+        // Ensure we return blocks processed so far for figure, unless handled above
+        return blocks; 
+        // break; // Now redundant due to returns
 
     case 'blockquote':
        const quoteRichText = convertNodeToRichText($, element);
-       if (quoteRichText.length > 0) {
-           console.log(`  [HTML->Notion] Creating Quote block for <blockquote>`); // Log block creation
+       if (quoteRichText.length > 0 && quoteRichText.some(rt => rt.text?.content?.trim())) {
            blocks.push({
              object: 'block',
              type: 'quote',
              quote: {
                rich_text: quoteRichText,
-               // Note: Notion API doesn't directly support children in quote blocks in the same way HTML does.
-               // We might need to flatten nested elements into the quote's rich_text or create subsequent blocks.
              },
            });
        }
       break;
 
     case 'pre':
-        // Find a <code> element inside, otherwise treat pre content as plain text
         const codeElement = $(element).find('code').first();
         const codeContentElement = codeElement.length ? codeElement : $(element);
-        const codeText = codeContentElement.text(); // Get raw text content
+        const codeText = codeContentElement.text(); 
         const languageClass = codeElement.attr('class') || '';
-        // Extract language from class like "language-javascript"
         const languageMatch = languageClass.match(/language-(\S+)/);
-        const language = languageMatch ? languageMatch[1] : 'plain text'; // Default language
-        console.log(`  [HTML->Notion] Detected language: ${language} for <pre> block`); // Log detected language
+        const language = languageMatch ? languageMatch[1] : 'plain text'; 
 
-        // <<< ADD LOGGING & TRUNCATION >>>
-        const MAX_CODE_LENGTH = 2000;
+        const MAX_CODE_LENGTH = 2000; // Notion API limit for code blocks
         let truncatedCodeText = codeText;
         if (codeText.length > MAX_CODE_LENGTH) {
-            console.warn(`  [HTML->Notion] WARN: Code block content exceeds 2000 chars (${codeText.length}). Truncating.`);
+            console.warn(`[HTML->Notion] WARN: Code block content exceeds ${MAX_CODE_LENGTH} chars (${codeText.length}). Truncating.`);
             truncatedCodeText = codeText.substring(0, MAX_CODE_LENGTH - 3) + '...';
         }
-        console.log(`  [HTML->Notion] Code Block Text (first 100): ${truncatedCodeText.substring(0, 100)}...`);
-        // <<< END LOGGING & TRUNCATION >>>
 
-        if (truncatedCodeText.trim()) { // Use truncated text
-             console.log(`  [HTML->Notion] Creating Code block for <pre>`); // Log block creation
+        if (truncatedCodeText.trim()) {
              blocks.push({
                  object: 'block',
                  type: 'code',
                  code: {
-                     rich_text: [{ // Code blocks use a single rich text item
+                     rich_text: [{ 
                          type: 'text',
-                         text: {
-                             content: truncatedCodeText, // Use truncated text
-                         },
-                         plain_text: truncatedCodeText, // Use truncated text
+                         text: { content: truncatedCodeText },
+                         plain_text: truncatedCodeText, 
                      }],
                      language: language,
                  },
@@ -217,7 +263,6 @@ function convertElementToNotionBlock($, element) {
         break;
 
     case 'hr':
-      console.log(`  [HTML->Notion] Creating Divider block for <hr>`); // Log block creation
       blocks.push({
         object: 'block',
         type: 'divider',
@@ -227,12 +272,14 @@ function convertElementToNotionBlock($, element) {
 
     case 'details': // Map to Toggle block
         const summaryElement = $(element).children('summary').first();
-        const summaryRichText = summaryElement.length ? convertNodeToRichText($, summaryElement.get(0)) : [{ type: 'text', text: { content: 'Toggle' } }]; // Default summary
+        const summaryRichText = summaryElement.length ? convertNodeToRichText($, summaryElement.get(0)) : [{ type: 'text', text: { content: 'Toggle' } }]; 
         const detailsChildren = [];
+        // Process nodes other than the summary to become children of the toggle
         $(element).contents().each((_, node) => {
             if (node.type === 'tag' && node.tagName.toLowerCase() !== 'summary') {
                 detailsChildren.push(...convertElementToNotionBlock($, node));
             } else if (node.type === 'text' && node.data.trim()) {
+                 // Wrap stray text nodes in paragraphs
                  detailsChildren.push({
                     object: 'block',
                     type: 'paragraph',
@@ -242,19 +289,19 @@ function convertElementToNotionBlock($, element) {
         });
 
         if (summaryRichText.length > 0 || detailsChildren.length > 0) {
-             console.log(`  [HTML->Notion] Creating Toggle block for <details>`); // Log block creation
              blocks.push({
                 object: 'block',
                 type: 'toggle',
                 toggle: {
                     rich_text: summaryRichText,
-                    children: detailsChildren.length > 0 ? detailsChildren : undefined, // Add children if they exist
+                    children: detailsChildren.length > 0 ? detailsChildren : undefined, 
                 }
             });
         }
-        break;
+        // Return early as children are handled
+        return blocks; 
 
-    // Handle other potential block-level elements or divs that might contain content
+    // Generic container tags - process their children recursively
     case 'div':
     case 'article':
     case 'section':
@@ -263,110 +310,112 @@ function convertElementToNotionBlock($, element) {
     case 'header':
     case 'footer':
     case 'nav':
-        // If it's a callout div, handle it specifically
+        // Handle specific classes like Webflow's callout
         if ($(element).hasClass('callout')) {
-            const calloutContent = $(element).contents().filter((_, node) => !(node.type === 'tag' && node.attribs?.style?.includes('margin-right'))).first(); // Try to get main content span
-            const calloutRichText = calloutContent.length ? convertNodeToRichText($, calloutContent.get(0)) : convertNodeToRichText($, element);
-            const emojiSpan = $(element).children('span[style*="margin-right"]').first();
-            const emoji = emojiSpan.length ? emojiSpan.text() : undefined;
+            // Simplified callout handling assuming text and optional emoji span
+             const calloutRichText = convertNodeToRichText($, element); // Convert whole div content
+             const emojiSpan = $(element).children('span[style*="margin-right"]').first(); // Heuristic for emoji
+             const emoji = emojiSpan.length ? emojiSpan.text().trim() : undefined;
 
-            if (calloutRichText.length > 0) {
-                 console.log(`  [HTML->Notion] Creating Callout block for <div class="callout">`); // Log block creation
+             if (calloutRichText.length > 0 && calloutRichText.some(rt => rt.text?.content?.trim())) {
                  blocks.push({
                     object: 'block',
                     type: 'callout',
                     callout: {
                         rich_text: calloutRichText,
                         icon: emoji ? { type: 'emoji', emoji: emoji } : undefined,
-                        // Note: Notion callouts don't nest blocks like HTML divs can.
-                        // Children within the div would need to be converted to separate blocks following the callout.
                     }
                  });
-            }
+                 // Return early for handled callout
+                 return blocks; 
+             }
         }
-        break;
+         // If not a handled special div, just process children via the default handler logic below
+         // Fall through intended
+        
 
-    // Ignore elements that don't map directly or are handled by parents
-    case 'br':
-    case 'span': // Usually handled by rich text conversion
-    case 'code': // Handled by 'pre' or rich text
-    case 'summary': // Handled by 'details'
-    case 'figcaption': // Handled by 'figure'/'img'
-        break;
+    // Ignore elements that don't map directly or are handled by parents/children
+    case 'br':          // Handled by rich text conversion
+    case 'span':        // Handled by rich text conversion
+    case 'code':        // Handled by 'pre' or rich text conversion
+    case 'summary':     // Handled by 'details'
+    case 'figcaption':  // Handled by 'figure'/'img' logic
+    case 'ul':          // Children 'li' are processed
+    case 'ol':          // Children 'li' are processed
+    case 'body':        // Root element, children processed by caller
+    case 'html':        // Root element, children processed by caller
+    case 'head':        // Ignored
+        break; // Do nothing for these tags
 
-    // <<< Add Video Handling >>>
+    // Handle standalone <video> tags (if not inside a figure)
     case 'video':
       const videoSrc = $(element).attr('src') || $(element).find('source').first().attr('src');
       if (videoSrc) {
-        // <<< ADD LOGGING >>>
-        console.log(`  [HTML->Notion] Creating Video block for <video> with src: ${videoSrc}`);
-        // <<< END LOGGING >>>
         blocks.push({
           object: 'block',
           type: 'video',
           video: {
             type: 'external', // Assuming external URL
-            external: {
-              url: videoSrc
-            },
-            // Notion doesn't currently support captions for video blocks via API
+            external: { url: videoSrc }
+            // Captions not supported by Notion API
           }
         });
-      } else {
-        console.log(`  [HTML->Notion] Skipping <video> tag with no src found.`);
       }
       break;
 
+    // Handle standalone <iframe> tags (if not inside a figure)
     case 'iframe':
-      const iframeSrc = $(element).attr('src');
-      // Basic check if it looks like a video embed URL (YouTube, Vimeo, etc.)
-      if (iframeSrc && (iframeSrc.includes('youtube.com') || iframeSrc.includes('vimeo.com') || iframeSrc.includes('youtu.be'))) {
-         // <<< ADD LOGGING >>>
-         console.log(`  [HTML->Notion] Creating Video block for <iframe> with src: ${iframeSrc}`);
-         // <<< END LOGGING >>>
-         blocks.push({
-           object: 'block',
-           type: 'video',
-           video: {
-             type: 'external',
-             external: {
-               url: iframeSrc
-             }
-           }
-         });
-      } else if (iframeSrc) {
-          console.log(`  [HTML->Notion] Skipping non-video <iframe> with src: ${iframeSrc}`);
-      } else {
-          console.log(`  [HTML->Notion] Skipping <iframe> tag with no src found.`);
+      const iframeSrcRaw = $(element).attr('src');
+      if (!$(element).closest('figure.w-richtext-figure-type-video').length && iframeSrcRaw) {
+          let potentialEmbedUrl = iframeSrcRaw;
+          // Extract original URL if it's an embedly iframe
+          if (iframeSrcRaw.includes('cdn.embedly.com')) {
+               try {
+                  const embedlyUrl = new URL(iframeSrcRaw);
+                  const originalUrl = embedlyUrl.searchParams.get('url');
+                  if (originalUrl) potentialEmbedUrl = originalUrl;
+               } catch (e) { /* Ignore URL parsing errors */ }
+          }
+
+          // Map to Notion video or embed block
+
+          // 1. Check for YouTube/Vimeo video URLs
+          if (potentialEmbedUrl.includes('youtube.com') || potentialEmbedUrl.includes('vimeo.com') || potentialEmbedUrl.includes('youtu.be')) {
+              blocks.push({
+                  object: 'block', type: 'video',
+                  video: { type: 'external', external: { url: potentialEmbedUrl } }
+              });
+          } 
+          // 2. Fallback to generic Embed block for everything else
+          else {
+              blocks.push({
+                  object: 'block', type: 'embed',
+                  embed: { url: potentialEmbedUrl }
+              });
+          }
       }
       break;
-    // <<< End Video Handling >>>
 
+    // Default handler for any other tag: Process children recursively.
+    // Also handles fallthrough from container tags like 'div' if not handled specifically (e.g., callout)
     default:
-       // Treat unrecognized block-level elements potentially as paragraphs
-        if (element.type === 'tag' && $(element).text().trim()) {
-            const defaultRichText = convertNodeToRichText($, element);
-            if (defaultRichText.length > 0) {
-                 console.log(`  [HTML->Notion] Creating Paragraph block for default tag <${tagName}>`); // Log block creation
+       $(element).contents().each((_, childNode) => {
+           if (childNode.type === 'tag') {
+               blocks.push(...convertElementToNotionBlock($, childNode));
+           } else if (childNode.type === 'text') {
+               // Wrap significant text nodes found directly within unhandled tags into paragraphs
+               const textContent = childNode.data;
+               if (textContent && textContent.trim()) {
                  blocks.push({
                     object: 'block',
                     type: 'paragraph',
                     paragraph: {
-                        rich_text: defaultRichText,
-                    },
-                 });
-            }
-        } else if (element.type === 'text' && element.data.trim()) {
-            console.log(`  [HTML->Notion] Creating Paragraph block for root text node`); // Log block creation
-            blocks.push({
-                 object: 'block',
-                 type: 'paragraph',
-                 paragraph: {
-                     rich_text: convertNodeToRichText($, element),
-                 },
-             });
-        }
-      // console.warn(`Unhandled HTML element type: ${tagName || element.type}`);
+                           rich_text: convertNodeToRichText($, childNode)
+                       }
+                   });
+               }
+           }
+       });
       break;
   }
 
@@ -375,29 +424,24 @@ function convertElementToNotionBlock($, element) {
 
 /**
  * Converts a Cheerio node (element or text) and its inline children into Notion rich_text array.
- * Handles annotations and links recursively.
  * @param {cheerio.CheerioAPI} $ - The Cheerio API instance.
- * @param {cheerio.Node} node - The Cheerio node to convert (should be an element).
+ * @param {cheerio.Node} node - The Cheerio node to convert.
  * @returns {Array<object>} - An array of Notion rich text objects.
  */
 function convertNodeToRichText($, node) {
   const richText = [];
 
-  // Recursive helper function to process nodes and apply annotations
+  // Recursive helper to process nodes and apply annotations/links
   const processNodeRecursive = (currentNode, currentAnnotations = {}, currentLink = null) => {
     if (currentNode.type === 'text') {
       let content = currentNode.data;
-      // Preserve non-breaking spaces and better handle whitespace
-      content = content.replace(/&nbsp;/g, ' ');
+      content = content.replace(/&nbsp;/g, ' '); // Handle non-breaking space
       
-      // Don't add empty segments - skip them entirely
+      // Add text segment if it contains content or is a deliberate newline
       if (content && content.trim().length > 0 || content === ' ' || content === '\n') {
         richText.push({
           type: 'text',
-          text: {
-            content: content,
-            link: currentLink,
-          },
+          text: { content: content, link: currentLink },
           annotations: {
             bold: !!currentAnnotations.bold,
             italic: !!currentAnnotations.italic,
@@ -412,160 +456,116 @@ function convertNodeToRichText($, node) {
       }
     } else if (currentNode.type === 'tag') {
       const tagName = currentNode.tagName.toLowerCase();
-      let newAnnotations = { ...currentAnnotations }; // Inherit annotations
-      let newLink = currentLink; // Inherit link
+      let newAnnotations = { ...currentAnnotations }; 
+      let newLink = currentLink;
 
+      // Apply annotations based on inline tags
       switch (tagName) {
-        case 'strong': case 'b':
-          newAnnotations.bold = true;
-          break;
-        case 'em': case 'i':
-          newAnnotations.italic = true;
-          break;
-        case 'u':
-          newAnnotations.underline = true;
-          break;
-        case 's': case 'strike': case 'del': // Add 'del' tag support
-          newAnnotations.strikethrough = true;
-          break;
+        case 'strong': case 'b': newAnnotations.bold = true; break;
+        case 'em': case 'i': newAnnotations.italic = true; break;
+        case 'u': newAnnotations.underline = true; break;
+        case 's': case 'strike': case 'del': newAnnotations.strikethrough = true; break;
         case 'code':
-          // Ensure it's not inside a <pre> block (handled separately)
+          // Apply code annotation only if not inside a <pre> block
           if (!$(currentNode).closest('pre').length) {
             newAnnotations.code = true;
           } else {
-             // If inside <pre>, treat as text, not code annotation
+             // If inside <pre>, treat content as plain text within the code block
               $(currentNode).contents().each((_, childNode) => {
                   processNodeRecursive(childNode, currentAnnotations, currentLink); // Use original annotations
               });
-              return; // Stop processing this code tag further
+              return; // Stop processing this code tag's children here
           }
           break;
         case 'a':
           const href = $(currentNode).attr('href');
-          if (href) {
-            newLink = { url: href };
-          }
+          if (href) newLink = { url: href };
           break;
         case 'br':
-          // Insert newline character, handled during consolidation
-           richText.push({ type: 'text', text: { content: '\n', link: null }, annotations: { ...currentAnnotations, color: currentAnnotations.color || 'default'}, plain_text: '\n', href: null }); // Add with current annotations
-          return; // Don't process children of <br>
-        case 'span': // Check for inline styles (better color handling for WebFlow)
+           // Insert newline character, will be handled by consolidation
+           richText.push({ type: 'text', text: { content: '\n', link: null }, annotations: { ...currentAnnotations, color: currentAnnotations.color || 'default'}, plain_text: '\n', href: null });
+          return; // No children for <br>
+        case 'span': // Check for inline style colors
           const style = $(currentNode).attr('style');
           if (style) {
+             // Basic color mapping from inline styles (can be expanded)
             const colorMatch = style.match(/color:\s*([^;]+)/i);
             const bgColorMatch = style.match(/background-color:\s*([^;]+)/i);
-            
             if (colorMatch) {
               const colorValue = colorMatch[1].trim().toLowerCase();
-              // Map to Notion colors - simplified approach
-              if (colorValue.includes('red')) {
-                newAnnotations.color = 'red';
-              } else if (colorValue.includes('blue')) {
-                newAnnotations.color = 'blue';
-              } else if (colorValue.includes('green')) {
-                newAnnotations.color = 'green';
-              } else if (colorValue.includes('yellow')) {
-                newAnnotations.color = 'yellow';
-              } else if (colorValue.includes('orange')) {
-                newAnnotations.color = 'orange';
-              } else if (colorValue.includes('pink')) {
-                newAnnotations.color = 'pink';
-              } else if (colorValue.includes('purple')) {
-                newAnnotations.color = 'purple';
-              } else if (colorValue.includes('gray') || colorValue.includes('grey')) {
-                newAnnotations.color = 'gray';
-              } else if (colorValue.includes('brown')) {
-                newAnnotations.color = 'brown';
-              } else {
-                newAnnotations.color = 'default';
-              }
+                 if (colorValue.includes('red')) newAnnotations.color = 'red';
+                 else if (colorValue.includes('blue')) newAnnotations.color = 'blue';
+                 else if (colorValue.includes('green')) newAnnotations.color = 'green';
+                 else if (colorValue.includes('yellow')) newAnnotations.color = 'yellow';
+                 else if (colorValue.includes('orange')) newAnnotations.color = 'orange';
+                 else if (colorValue.includes('pink')) newAnnotations.color = 'pink';
+                 else if (colorValue.includes('purple')) newAnnotations.color = 'purple';
+                 else if (colorValue.includes('gray') || colorValue.includes('grey')) newAnnotations.color = 'gray';
+                 else if (colorValue.includes('brown')) newAnnotations.color = 'brown';
+                 else newAnnotations.color = 'default';
             } else if (bgColorMatch) {
               const bgColorValue = bgColorMatch[1].trim().toLowerCase();
-              // Map to Notion background colors
-              if (bgColorValue.includes('red')) {
-                newAnnotations.color = 'red_background';
-              } else if (bgColorValue.includes('blue')) {
-                newAnnotations.color = 'blue_background';
-              } else if (bgColorValue.includes('green')) {
-                newAnnotations.color = 'green_background';
-              } else if (bgColorValue.includes('yellow')) {
-                newAnnotations.color = 'yellow_background';
-              } else if (bgColorValue.includes('orange')) {
-                newAnnotations.color = 'orange_background';
-              } else if (bgColorValue.includes('pink')) {
-                newAnnotations.color = 'pink_background';
-              } else if (bgColorValue.includes('purple')) {
-                newAnnotations.color = 'purple_background';
-              } else if (bgColorValue.includes('gray') || bgColorValue.includes('grey')) {
-                newAnnotations.color = 'gray_background';
-              } else if (bgColorValue.includes('brown')) {
-                newAnnotations.color = 'brown_background';
-              } else {
-                newAnnotations.color = 'default';
-              }
+                 if (bgColorValue.includes('red')) newAnnotations.color = 'red_background';
+                 else if (bgColorValue.includes('blue')) newAnnotations.color = 'blue_background';
+                 else if (bgColorValue.includes('green')) newAnnotations.color = 'green_background';
+                 else if (bgColorValue.includes('yellow')) newAnnotations.color = 'yellow_background';
+                 else if (bgColorValue.includes('orange')) newAnnotations.color = 'orange_background';
+                 else if (bgColorValue.includes('pink')) newAnnotations.color = 'pink_background';
+                 else if (bgColorValue.includes('purple')) newAnnotations.color = 'purple_background';
+                 else if (bgColorValue.includes('gray') || bgColorValue.includes('grey')) newAnnotations.color = 'gray_background';
+                 else if (bgColorValue.includes('brown')) newAnnotations.color = 'brown_background';
+                 else newAnnotations.color = 'default';
             }
           }
           break;
 
-        // Original behavior: Skip block elements in rich text context
+        // Skip block-level elements when creating rich text for another block
         case 'p': case 'div': case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
         case 'blockquote': case 'pre': case 'hr': case 'ul': case 'ol': case 'li':
-        case 'figure': case 'img': case 'table': case 'tr': case 'td': case 'th':
-          // console.warn(`Skipping block tag <${tagName}> encountered within rich text context.`);
-          return; // Skip these block elements entirely in rich text context
+        case 'figure': case 'img': case 'table': case 'tr': case 'td': case 'th': case 'video': case 'iframe':
+          return; // Don't process children of block elements in rich text context
 
-        // Ignore tags that don't map to annotations but process children
-        default:
+        default: // Process children of other unrecognized inline tags
           break;
       }
 
-      // Recursively process children nodes with potentially updated annotations/link
+      // Recursively process children with updated annotations/link
       $(currentNode).contents().each((_, childNode) => {
         processNodeRecursive(childNode, newAnnotations, newLink);
       });
     }
   };
 
-  // Start processing from the initial node's children (if it's an element)
+  // Start processing based on the type of the initial node
    if (node.type === 'tag'){
         $(node).contents().each((_, childNode) => {
-            // Start with default annotations and no link for top-level children
-            processNodeRecursive(childNode, {}, null);
+            processNodeRecursive(childNode, {}, null); // Start with default annotations/link
         });
    } else if (node.type === 'text') {
-        // Handle case where the root node passed is a text node (e.g., from figcaption)
+        // Handle case where the root node passed is already a text node
         processNodeRecursive(node, {}, null);
    }
 
-
-   // Consolidate the generated rich text segments
+   // Consolidate adjacent rich text segments with same formatting
    return consolidateRichText(richText);
 }
 
 /**
- * Consolidates an array of rich text objects:
- * - Merges consecutive segments with identical annotations and links.
- * - Handles newlines from <br> tags correctly.
- * - Trims leading/trailing whitespace from the final array.
- * - Ensures plain_text is accurate.
+ * Consolidates adjacent rich text segments with identical formatting.
  * @param {Array<object>} richTextArr - The input array of rich text objects.
  * @returns {Array<object>} - The consolidated array.
  */
 function consolidateRichText(richTextArr) {
-    if (!richTextArr || richTextArr.length === 0) {
-        return [];
-    }
+    if (!richTextArr || richTextArr.length === 0) return [];
 
     const consolidated = [];
     let currentSegment = null;
 
     for (const segment of richTextArr) {
-        // Skip segments that became empty after whitespace normalization in the previous step (should be rare now)
-        if (segment.type === 'text' && !segment.text.content) {
-            continue;
-        }
+        // Skip empty text segments
+        if (segment.type === 'text' && !segment.text.content) continue;
 
+        // Check if current segment can be merged with the previous one
         if (currentSegment &&
             currentSegment.type === 'text' &&
             segment.type === 'text' &&
@@ -574,120 +574,120 @@ function consolidateRichText(richTextArr) {
             JSON.stringify(currentSegment.annotations) === JSON.stringify(segment.annotations) &&
             JSON.stringify(currentSegment.text.link) === JSON.stringify(segment.text.link))
         {
-            // Merge with previous segment
+            // Merge content
             currentSegment.text.content += segment.text.content;
-            // plain_text is generated at the end
         } else {
-            // Start a new segment
-            if (currentSegment) {
-                consolidated.push(currentSegment);
-            }
-            // Deep copy the segment to avoid modifying the original array/objects
+            // Push previous segment and start a new one
+            if (currentSegment) consolidated.push(currentSegment);
+            // Deep copy to avoid modifying original objects
             currentSegment = JSON.parse(JSON.stringify(segment));
         }
     }
+    // Push the last segment
+    if (currentSegment) consolidated.push(currentSegment);
 
-    // Push the last processed segment
-    if (currentSegment) {
-        consolidated.push(currentSegment);
-    }
-
-    // Re-calculate plain_text and perform final whitespace cleanup
+    // Recalculate plain_text and trim whitespace carefully
     const finalConsolidated = [];
     consolidated.forEach(seg => {
         if(seg.type === 'text') {
-            // Update plain_text after potential merging
-            seg.plain_text = seg.text.content;
+            seg.plain_text = seg.text.content; // Update plain_text after merging
             finalConsolidated.push(seg);
         } else {
-            // Keep non-text segments as is (e.g., mentions, equations - future)
-            finalConsolidated.push(seg);
+            finalConsolidated.push(seg); // Keep non-text segments
         }
     });
 
-    // Trim leading whitespace ONLY from the very first text segment IF it's not just a newline
+    // Trim leading space from first text segment (unless it's just a newline)
     if (finalConsolidated.length > 0 && finalConsolidated[0].type === 'text' && finalConsolidated[0].text.content !== '\n') {
         const originalContent = finalConsolidated[0].text.content;
         finalConsolidated[0].text.content = originalContent.trimStart();
-         // Only update plain_text if content actually changed
         if (finalConsolidated[0].text.content !== originalContent) {
              finalConsolidated[0].plain_text = finalConsolidated[0].text.content;
         }
-        // Remove segment if trimming made it empty AND it wasn't just a newline
+        // Remove segment if trimming made it completely empty
         if (!finalConsolidated[0].text.content && originalContent !== '\n') {
             finalConsolidated.shift();
         }
     }
 
-     // Trim trailing whitespace ONLY from the very last text segment IF it's not just a newline
+     // Trim trailing space from last text segment (unless it's just a newline)
      if (finalConsolidated.length > 0) {
         const lastIndex = finalConsolidated.length - 1;
         if (finalConsolidated[lastIndex].type === 'text' && finalConsolidated[lastIndex].text.content !== '\n') {
              const originalContent = finalConsolidated[lastIndex].text.content;
              finalConsolidated[lastIndex].text.content = originalContent.trimEnd();
-             // Only update plain_text if content actually changed
             if (finalConsolidated[lastIndex].text.content !== originalContent) {
                 finalConsolidated[lastIndex].plain_text = finalConsolidated[lastIndex].text.content;
             }
-             // Remove segment if trimming made it empty AND it wasn't just a newline
+            // Remove segment if trimming made it completely empty
              if (!finalConsolidated[lastIndex].text.content && originalContent !== '\n') {
                 finalConsolidated.pop();
             }
         }
      }
 
-
-    // Remove empty text segments that might have resulted from trimming, unless it's an intentional newline
+    // Final filter for any potentially empty segments remaining (should be rare)
     return finalConsolidated.filter(segment => segment.type !== 'text' || segment.text.content.length > 0 || segment.plain_text === '\n');
 }
 
 /**
- * Main function wrapper to process root elements and finalize list grouping.
+ * Main internal conversion function. Parses HTML and converts root nodes.
  * @param {string} htmlString - The HTML string to convert.
  * @returns {Array<object>} - An array of Notion block objects.
  */
 function convertHtmlToNotionBlocksInternal(htmlString) {
-  // <<< Log Entry and Input >>>
-  console.log(`[HTML->Notion] ENTERING convertHtmlToNotionBlocksInternal. Input HTML (first 100 chars):`, htmlString?.substring(0, 100));
-  // <<< End Log >>>
-
- if (typeof htmlString !== 'string' || !htmlString.trim()) { // Added check for empty/whitespace string
+ if (typeof htmlString !== 'string' || !htmlString.trim()) {
     console.error("[HTML->Notion] Invalid or empty input HTML string.");
     return [];
   }
 
   try {
-    const $ = cheerio.load(htmlString, { decodeEntities: true }); // Decode entities
+    // Use decodeEntities to handle HTML entities like &amp;
+    const $ = cheerio.load(htmlString, { decodeEntities: true }); 
     let blocks = [];
-    // Select children of the BODY element instead of the root
-    const rootElements = $('body').children(); 
-    // console.log(`DEBUG: Found ${rootElements.length} root elements in HTML string.`); // Log root elements
+    // Process all direct children (including text nodes) of the effective body
+    const rootNodes = $('body').contents(); 
 
-    rootElements.each((index, element) => {
-      // console.log(`DEBUG: Processing root element ${index}: ${element.tagName}`); // Log each root element being processed
-      const convertedBlocks = convertElementToNotionBlock($, element);
-      // console.log(`DEBUG: Element ${index} (${element.tagName}) converted to ${convertedBlocks.length} blocks.`); // Log block count
-      blocks.push(...convertedBlocks);
+    rootNodes.each((index, node) => {
+      if (node.type === 'tag') {
+          blocks.push(...convertElementToNotionBlock($, node));
+      } else if (node.type === 'text') {
+          // Wrap significant root-level text nodes in paragraphs
+          const textContent = node.data;
+          if (textContent && textContent.trim()) {
+               blocks.push({
+                   object: 'block', type: 'paragraph',
+                   paragraph: { rich_text: convertNodeToRichText($, node) }
+               });
+          }
+      }
     });
 
-    // A final cleanup: Remove potentially empty paragraphs that might result
-    // from constructs like <div><br></div> after processing.
+    // Final cleanup: Remove paragraph blocks that are effectively empty (only whitespace or ZWJ)
     blocks = blocks.filter(block => {
         if (block.type === 'paragraph') {
-            // Keep if rich_text has content or an intentional newline
-            return block.paragraph.rich_text.length > 0 &&
-                   block.paragraph.rich_text.some(rt => rt.text?.content?.trim() || rt.text?.content === '\n');
+            const textContent = block.paragraph.rich_text
+                .map(rt => rt.text?.content || '')
+                .join('');
+            const isEmptyOrWhitespace = !textContent.trim();
+            const isOnlyZwj = textContent === '\u200D'; // Zero Width Joiner
+
+            if (isEmptyOrWhitespace || isOnlyZwj) {
+                 return false; // Filter out
+            }
         }
-        return true; // Keep non-paragraph blocks
+        return true; // Keep non-paragraph blocks and valid paragraphs
     });
 
 
     return blocks;
   } catch (error) {
-    console.error("Error parsing HTML:", error);
-    return [];
+    // Provide more context in error logging if possible
+    console.error("[HTML->Notion] Error parsing HTML:", error.message); 
+    console.error("Input HTML (first 500 chars):", htmlString?.substring(0, 500)); // Log beginning of failing HTML
+    return []; // Return empty array on error
   }
 }
 
-// Updated export to use the internal wrapper name
+// Export the main internal function
 export { convertHtmlToNotionBlocksInternal as convertHtmlToNotionBlocks }; 

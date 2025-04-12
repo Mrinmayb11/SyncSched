@@ -2,7 +2,8 @@
 import pLimit from 'p-limit';
 import { getCollectionItems } from './fetch-webflow.js';
 import { convertHtmlToNotionBlocks } from '../utils/htmlToNotion.js';
-import { NotionInit } from './sync2notion.js';
+import { NotionInit } from './syncDbProp.js';
+import { updateNotionPageWithWebflowId, ensureNotionWebflowIdProperty } from './establishLink.js';
 
 /**
  * Maps Webflow item field data to Notion page properties format.
@@ -460,180 +461,187 @@ function extractAndConvertRichTextToBlocks(webflowItemFieldData, webflowFieldsSc
 }
 
 /**
- * Fetches Webflow items and creates corresponding pages in Notion databases.
- * Uses helper functions to map properties and convert Rich Text to page content.
- * @param {Array<{webflowCollectionId: string, webflowFields: Array<object>, notionDbId: string, notionDbProperties: object}>} createdDatabasesInfo
- *        - Information about the created Notion databases and their corresponding Webflow collections/fields.
+ * Synchronizes items from Webflow collections to corresponding Notion database pages.
+ * Creates or updates Notion pages based on Webflow item data.
+ * @param {Array<object>} createdDatabasesInfo - Array containing info about linked Notion DBs and Webflow Collections.
+ * @returns {Promise<{success: boolean, created: number, updated: number, skipped: number, failed: number}>}
  */
 export async function syncWebflowItemsToNotionPages(createdDatabasesInfo) {
+    console.log("Starting Webflow -> Notion page synchronization...");
+    let stats = { success: true, created: 0, updated: 0, skipped: 0, failed: 0 };
+
     if (!createdDatabasesInfo || createdDatabasesInfo.length === 0) {
-        console.log("No database information provided for page sync. Skipping item sync.");
-        return;
+        console.log("No linked databases provided. Skipping page sync.");
+        return { ...stats, success: false, message: "No linked databases provided." };
     }
 
-    let notion;
+    const { notion } = await NotionInit();
+    const limit = pLimit(2); // Notion API recommends lower concurrency (e.g., 3 req/sec)
+
+    // Ensure the Webflow Item ID property exists in all target databases first
+    // This runs concurrently but is limited by notionLimit inside establishLink.js
+    const propertyCheckPromises = createdDatabasesInfo.map(dbInfo =>
+        ensureNotionWebflowIdProperty(dbInfo.notionDbId)
+    );
+    await Promise.all(propertyCheckPromises);
+    console.log("Finished ensuring Webflow Item ID properties exist in target Notion databases.");
+
+
+    // Fetch all Webflow items for the relevant collections *once*
+    let allWebflowItemsByCollection = {};
     try {
-        ({ notion } = await NotionInit());
+        // Assuming getCollectionItems fetches items for ALL collections by default
+        // If not, you might need to pass specific collection IDs based on createdDatabasesInfo
+        const fetchedItemsData = await getCollectionItems();
+        fetchedItemsData.forEach(colData => {
+            allWebflowItemsByCollection[colData.collectionId] = colData.items || [];
+        });
     } catch (error) {
-        console.error("Cannot sync items due to Notion client initialization failure:", error);
-        return;
+        console.error("Fatal error fetching Webflow items:", error);
+        return { ...stats, success: false, message: "Failed to fetch Webflow items.", error: error };
     }
 
-    console.log("\nStarting sync of Webflow items to Notion database pages...");
+    const syncPromises = createdDatabasesInfo.flatMap(dbInfo => {
+        const { notionDbId, webflowCollectionId, webflowFields, notionDbProperties } = dbInfo;
+        const webflowItems = allWebflowItemsByCollection[webflowCollectionId];
 
-    // 1. Fetch all Webflow items across all relevant collections
-    let allWebflowItemsByCollection;
-    try {
-        // *** Crucial Assumption: getCollectionItems fetches items for ALL collections
-        // and returns [{ collectionId: '...', collectionName: '...', items: [...] }, ...] ***
-        const fetchedItemsArray = await getCollectionItems();
-        if (!fetchedItemsArray || fetchedItemsArray.length === 0) {
-             console.log("No items found in Webflow collections.");
-             return;
+        if (!webflowItems) {
+            console.warn(`No Webflow items found or fetched for Collection ID: ${webflowCollectionId}`);
+            return []; // Skip this database if no items
         }
-         // Transform into a map for easier lookup by Webflow Collection ID
-         const webflowItemsMap = fetchedItemsArray.reduce((map, colItems) => {
-             // Ensure the structure from getCollectionItems includes collectionId
-             if (colItems.collectionId && colItems.items) {
-                 map[colItems.collectionId] = colItems.items;
-             } else {
-                 console.warn(`Item data for collection '${colItems.collectionName || 'Unknown'}' is missing collectionId or items array. Skipping.`);
-             }
-             return map;
-         }, {});
-         allWebflowItemsByCollection = webflowItemsMap; // Replace array with map
-
-    } catch (error) {
-        console.error("Failed to fetch Webflow collection items:", error);
-        return;
-    }
-
-    const limitSync = pLimit(1); // Limit concurrent page creations (Reduced from 3 to 1)
-    let totalItemsProcessed = 0;
-    let totalItemsSynced = 0;
-    let totalItemsFailed = 0;
-
-    // 2. Iterate through the created Notion databases info
-    const syncPromises = createdDatabasesInfo.map(async (dbInfo) => {
-        const { webflowCollectionId, notionDbId, notionDbProperties, webflowFields } = dbInfo;
-
-        // Ensure required info is present
-        if (!webflowCollectionId || !notionDbId || !notionDbProperties || !webflowFields) {
-            console.warn(`Skipping sync for a database due to missing info (WfID: ${webflowCollectionId}, NtID: ${notionDbId}).`);
+        if (!notionDbId) {
+            console.warn(`Skipping sync for Webflow Collection ${webflowCollectionId} due to missing Notion DB ID.`);
+            stats.skipped += webflowItems.length;
             return [];
         }
 
-        const webflowItems = allWebflowItemsByCollection[webflowCollectionId];
+        console.log(`Processing ${webflowItems.length} items for Notion DB ${notionDbId} (from Webflow Collection ${webflowCollectionId})...`);
 
-        if (!webflowItems || webflowItems.length === 0) {
-            console.log(`- No Webflow items found for Collection ID ${webflowCollectionId} (Notion DB: ${notionDbId}). Skipping.`);
-            return []; // No items to process for this DB
-        }
+        return webflowItems.map(item => limit(async () => {
+            const webflowItemId = item._id; // Webflow item's unique ID
+            const webflowItemFieldData = item.fieldData || item; // Adjust based on actual structure
+            let notionPageId = null;
 
-        console.log(`- Processing ${webflowItems.length} items for Notion DB ${notionDbId} (from Webflow Collection ${webflowCollectionId})...`);
-        const itemSyncResults = [];
+            try {
+                // 1. Prepare Notion Properties (excluding Webflow Item ID initially)
+                const notionPageProperties = mapWebflowItemToNotionProperties(
+                    webflowItemFieldData,
+                    notionDbProperties,
+                    webflowFields
+                );
 
-        // 3. For each item in the corresponding Webflow collection...
-        for (const item of webflowItems) {
-            totalItemsProcessed++;
-            // *** Adjust based on actual Webflow item structure ***
-            const webflowItemId = item.id; // Assuming Webflow item object has an 'id'
-            const webflowItemData = item.fieldData; // Assuming field data is nested under 'fieldData'
-            const webflowItemName = webflowItemData?.name || webflowItemId; // Use name field or ID for logging
+                // 2. Prepare Notion Content Blocks (if applicable)
+                const notionContentBlocks = await extractAndConvertRichTextToBlocks(
+                    webflowItemFieldData,
+                    webflowFields
+                );
 
-            if (!webflowItemId || !webflowItemData) {
-                console.warn(`  Skipping item due to missing ID or fieldData in Webflow Collection ${webflowCollectionId}. Item:`, item);
-                totalItemsFailed++;
-                continue;
-            }
-
-            await limitSync(async () => {
+                // 3. Check if Notion page already exists (Query by Webflow Item ID)
+                let existingPage = null;
                 try {
-                    // 4. Map Webflow fields to Notion properties
-                    const notionPageProperties = mapWebflowItemToNotionProperties(webflowItemData, notionDbProperties, webflowFields);
+                    const queryResponse = await notion.databases.query({
+                        database_id: notionDbId,
+                        filter: {
+                            property: 'Webflow Item ID', // Use the constant name
+                            rich_text: {
+                                equals: webflowItemId,
+                            },
+                        },
+                        page_size: 1 // We only expect one match
+                    });
+                    if (queryResponse.results.length > 0) {
+                        existingPage = queryResponse.results[0];
+                        notionPageId = existingPage.id;
+                    }
+                } catch (queryError) {
+                    // Handle cases where the property might not exist yet or query fails
+                    if (queryError.code === 'validation_error') { // Property might not exist
+                         console.warn(`[Sync Warning] Query for Webflow Item ID failed for DB ${notionDbId}. Property might be missing or type mismatch. Will attempt creation.`);
+                    } else {
+                        console.error(`[Sync Error] Failed to query Notion for existing page (Webflow ID: ${webflowItemId}) in DB ${notionDbId}:`, queryError.body || queryError.message);
+                        // Decide if we should continue or fail this item
+                    }
+                    // Continue, attempt creation if query fails
+                }
 
-                    // 5. Extract Rich Text fields and convert to Notion blocks for page content
-                    const notionPageContentBlocks = extractAndConvertRichTextToBlocks(webflowItemData, webflowFields);
+                // 4. Create or Update Notion Page
+                if (existingPage) {
+                    // --- Update Existing Page ---
+                    console.log(`Updating Notion page ${existingPage.id} for Webflow item ${webflowItemId}...`);
+                    try {
+                        // Update properties
+                        await notion.pages.update({
+                            page_id: existingPage.id,
+                            properties: notionPageProperties,
+                            // Note: Archiving/Unarchiving can be handled here if needed
+                            // archived: false,
+                        });
 
-                    // Basic check: Ensure 'Name' property exists before creating page
-                    if (!notionPageProperties['Name']?.title?.[0]?.text?.content) {
-                        console.warn(`  Skipping item ID ${webflowItemId} ('${webflowItemName}') because 'Name' property could not be mapped.`);
-                         totalItemsFailed++;
-                        return; // Skip creation if Name is missing
+                        // TODO: Update Content Blocks - More complex
+                        // Need to delete existing blocks then add new ones.
+                        // Be cautious with this to avoid accidental data loss.
+                        // Consider a block diffing strategy for partial updates if necessary.
+
+                        console.log(` -> Updated properties for Notion page ${existingPage.id}`);
+                        stats.updated++;
+                    } catch (updateError) {
+                         console.error(`❌ Failed to update Notion page ${existingPage.id}:`, updateError.body || updateError.message);
+                         stats.failed++;
+                         return; // Skip linking if update failed
                     }
 
-                    // 6. Create the Notion page (WITHOUT children initially)
-                    console.log(`  Creating Notion page for Webflow item: '${webflowItemName}' (ID: ${webflowItemId}) in DB ${notionDbId}`);
+                } else {
+                    // --- Create New Page ---
+                    console.log(`Creating new Notion page for Webflow item ${webflowItemId} in DB ${notionDbId}...`);
+                    try {
                     const newPage = await notion.pages.create({
                         parent: { database_id: notionDbId },
                         properties: notionPageProperties,
-                        // Children will be appended in batches after page creation
-                        // ...(notionPageContentBlocks.length > 0 && { children: notionPageContentBlocks })
-                    });
-                    console.log(`    ✅ Successfully created Notion page ${newPage.id} for Webflow item ${webflowItemId}`);
-                    totalItemsSynced++;
-
-                    // 7. Append children blocks if they exist
-                    if (notionPageContentBlocks.length > 0) {
-                        console.log(`    Appending ${notionPageContentBlocks.length} content blocks to page ${newPage.id}...`);
-                        console.log(`    DEBUG: Blocks to be appended:`, JSON.stringify(notionPageContentBlocks, null, 2));
-
-                        // Append blocks in batches of 100 (Notion API limit)
-                        const BATCH_SIZE = 100;
-                        for (let i = 0; i < notionPageContentBlocks.length; i += BATCH_SIZE) {
-                            const batch = notionPageContentBlocks.slice(i, i + BATCH_SIZE);
-                            try {
-                                console.log(`Appending batch ${Math.floor(i / BATCH_SIZE) + 1} (${batch.length} blocks)...`);
-                                await notion.blocks.children.append({
-                                    block_id: newPage.id,
-                                    children: batch,
-                                });
-                                // Add a small delay between batch appends to avoid rate limits
-                                await new Promise(resolve => setTimeout(resolve, 350)); // ~3 requests/sec
-                            } catch (appendError) {
-                                console.error(`    ❌ FAILED TO APPEND BLOCK BATCH ${Math.floor(i / BATCH_SIZE) + 1} to page ${newPage.id}.`);
-                                console.error(`    Append Error Code: ${appendError.code || 'N/A'}`);
-                                console.error(`    Append Error Message: ${appendError.message}`);
-                                if (appendError.body) {
-                                    console.error(`    Append Error Body:`, JSON.stringify(appendError.body, null, 2));
-                                }
-                                // Optional: Decide if failure to append blocks should mark the whole item as failed
-                                // throw appendError; // Re-throw to mark item as failed? Or just log and continue?
-                            }
-                        }
-                        console.log(`    ✅ Finished appending blocks to page ${newPage.id}`);
+                            children: notionContentBlocks.length > 0 ? notionContentBlocks : undefined,
+                        });
+                        notionPageId = newPage.id;
+                        console.log(` -> Created Notion page ${newPage.id}`);
+                        stats.created++;
+                    } catch (createError) {
+                        console.error(`❌ Failed to create Notion page for Webflow item ${webflowItemId}:`, createError.body || createError.message);
+                        console.error("   Properties attempted:", JSON.stringify(notionPageProperties, null, 2));
+                        console.error("   Content blocks attempted:", JSON.stringify(notionContentBlocks, null, 2));
+                        stats.failed++;
+                        return; // Skip linking if creation failed
                     }
-
-                    itemSyncResults.push({ webflowItemId, notionPageId: newPage.id, status: 'success' });
-
-                } catch (error) {
-                    console.error(`  ❌ Failed to create Notion page for Webflow item '${webflowItemName}' (ID: ${webflowItemId}) in DB ${notionDbId}:`, error.body ? JSON.stringify(error.body) : error.message);
-                     // Log the properties/content that might have caused the error
-                     try {
-                        const propertiesForLog = mapWebflowItemToNotionProperties(webflowItemData, notionDbProperties, webflowFields);
-                        const contentForLog = extractAndConvertRichTextToBlocks(webflowItemData, webflowFields);
-                        console.error("    --- Properties Payload causing error: ---");
-                        console.error(JSON.stringify(propertiesForLog, null, 2));
-                        console.error("    --- Content Blocks Payload causing error: ---");
-                        console.error(JSON.stringify(contentForLog, null, 2));
-                        console.error("    --- End Payloads ---");
-                     } catch (logError) { /* Ignore errors during logging */ }
-
-                    totalItemsFailed++;
-                    itemSyncResults.push({ webflowItemId, status: 'error', error: error.body ? JSON.stringify(error.body) : error.message });
                 }
-                 // Small delay to help avoid rate limits
-                 await new Promise(resolve => setTimeout(resolve, 500)); // Increased delay to 500ms
-            });
-        }
-        return itemSyncResults;
-    });
 
-    // Wait for all database item syncs to complete
-    const allResults = (await Promise.all(syncPromises)).flat();
+                // 5. Establish Link (Update Notion Page with Webflow ID) - AFTER successful create/update
+                if (notionPageId && webflowItemId) {
+                    const linkSuccess = await updateNotionPageWithWebflowId(notionPageId, webflowItemId);
+                    if (!linkSuccess) {
+                        console.warn(`[Sync Warning] Failed to update Notion page ${notionPageId} with Webflow Item ID ${webflowItemId} after creation/update.`);
+                        // Decide if this should increment 'failed' stat or just be a warning
+                    }
+                } else {
+                     console.warn(`[Sync Warning] Skipping link update for Webflow item ${webflowItemId} due to missing Notion Page ID.`);
+                }
 
-    console.log(`\nPage Sync Complete. Processed: ${totalItemsProcessed}, Synced: ${totalItemsSynced}, Failed: ${totalItemsFailed}`);
+            } catch (error) {
+                console.error(`❌ Unexpected error processing Webflow item ${webflowItemId}:`, error);
+                stats.failed++;
+            }
+        })); // End limit wrapper
+    }); // End flatMap
 
-    // Optional: Return detailed results
-    // return allResults;
-} 
+    try {
+        await Promise.all(syncPromises);
+        console.log("Webflow -> Notion page synchronization process finished.");
+        console.log("Sync Stats:", stats);
+    } catch (error) {
+        console.error("Error during Promise.all for sync tasks:", error);
+        stats.success = false;
+        stats.message = "Error occurred during sync operations execution.";
+        stats.error = error;
+    }
+
+    return stats;
+}
+
+// --- Potentially keep or remove the old syncNotionPages if it's redundant ---
+// async function syncNotionPages(createdDatabasesInfo) { ... } 

@@ -4,9 +4,14 @@ import 'dotenv/config';
 import { db_client } from '../config/database.js';
 
 // Get access token from DB
-async function getAccessToken() {
+export async function getAccessToken() {
   try {
     const result = await db_client.query("SELECT access_token FROM cms_users ORDER BY id DESC LIMIT 1");
+    // Add a check in case no token is found
+    if (!result.rows || result.rows.length === 0 || !result.rows[0].access_token) {
+        console.error('No Webflow access token found in cms_users table.');
+        return null; 
+    }
     return result.rows[0].access_token;
   } catch (error) {
     console.error('Error retrieving token from DB:', error.message);

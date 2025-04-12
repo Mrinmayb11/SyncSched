@@ -9,8 +9,8 @@ import { WebflowClient } from 'webflow-api';
 import protectedRoutes from "./api/auth/protected.js";
 import notionAuthRouter from "./api/auth/notion_auth.js";
 import { getCollections, getCollectionFields } from "./services/fetch-webflow.js";
-import  createAndPopulateDatabases  from "./services/sync2notion.js";
-import runFullSyncProcess from './services/sync2notion.js';
+import  createAndPopulateDatabases  from "./services/syncDbProp.js";
+import runFullSyncProcess from './services/syncDbProp.js';
 
 
 

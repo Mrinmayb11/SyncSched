@@ -4,7 +4,7 @@ import axios from 'axios';
 import 'dotenv/config';
 import { save_access_token } from '../../services/fetch-notion.js';
 // Import the default export (runFullSyncProcess) from sync2notion.js
-import runFullSyncProcess from '../../services/sync2notion.js'; 
+
 
 const router = express.Router();
 

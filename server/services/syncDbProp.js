@@ -3,7 +3,6 @@ import 'dotenv/config';
 import pLimit from 'p-limit';
 import { getCollectionFields, getCollectionItems } from './fetch-webflow.js';
 import { save_access_token, get_notion_access_token, parent_page_id } from './fetch-notion.js';
-import { syncWebflowItemsToNotionPages } from './syncNotionPages.js';
 
 
 
@@ -427,43 +426,8 @@ Attempting to convert placeholders and link relations for ${createdDatabasesInfo
     return updateResults; // Return the detailed results
 }
 
-/**
- * Runs the full Notion synchronization process:
- * 1. Creates Notion databases based on Webflow collections.
- * 2. Links relation properties between the created databases.
- * 3. Syncs Webflow items into the corresponding Notion database pages.
- */
-export default async function runFullSyncProcess() {
-    console.log("Starting full Webflow -> Notion sync process...");
-    try {
-        // Step 1: Create Databases
-        console.log("\n--- Step 1: Creating Databases ---");
-        const createdDatabasesInfo = await CreateDatabases(); // Call the named export
-
-        if (!createdDatabasesInfo || createdDatabasesInfo.length === 0) {
-            console.log("Database creation step yielded no results. Halting sync.");
-            return { success: true, message: "No databases needed creation.", databasesCreated: 0 };
-        }
-        console.log(`--- Step 1 Complete: ${createdDatabasesInfo.length} database(s) info captured ---`);
-
-        // Step 2: Link Relations
-        console.log("\n--- Step 2: Linking Relations ---");
-        await linkNotionRelations(createdDatabasesInfo);
-        console.log("--- Step 2 Complete: Relation linking attempted ---");
-
-        // Step 3: Sync Items to Pages (Uses imported function)
-        console.log("\n--- Step 3: Syncing Items to Pages ---");
-        await syncWebflowItemsToNotionPages(createdDatabasesInfo);
-        console.log("--- Step 3 Complete: Item sync attempted ---");
-
-        console.log("\nFull Webflow -> Notion sync process completed successfully.");
-        return { success: true, message: "Sync completed successfully.", databasesCreated: createdDatabasesInfo.length };
-
-    } catch (error) {
-        console.error("An error occurred during the full sync process:", error);
-        return { success: false, message: `Sync failed: ${error.message}`, error: error };
-    }
-}
+// REMOVE THE ENTIRE runFullSyncProcess FUNCTION DEFINITION HERE (approx lines 436-466)
 
 // Ensure the exports only include functions defined in *this* file + the imported sync function
-export {  NotionInit, syncWebflowItemsToNotionPages }; 
+// REMOVE THIS FINAL EXPORT LINE
+// export {  NotionInit, syncWebflowItemsToNotionPages }; 
