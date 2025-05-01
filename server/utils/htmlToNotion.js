@@ -95,9 +95,11 @@ function convertElementToNotionBlock($, element) {
       break;
 
     case 'li':
+      console.log(`[Debug LI] Found <li> element.`); // Log entry
       // Determine parent list type
       const parentListTag = $(element).parent().get(0)?.tagName?.toLowerCase();
       const itemType = parentListTag === 'ol' ? 'numbered_list_item' : 'bulleted_list_item';
+      console.log(`[Debug LI] Determined item type: ${itemType}`); // Log type
 
       // Separate direct children text/inline elements from nested list elements
       const liContentNodes = $(element).contents().filter((_, node) => 
@@ -110,6 +112,7 @@ function convertElementToNotionBlock($, element) {
       const $tempWrapper = $('<div></div>');
       liContentNodes.each((_, node) => $tempWrapper.append($(node).clone()));
       const liRichText = convertNodeToRichText($, $tempWrapper.get(0));
+      console.log(`[Debug LI] Generated liRichText:`, JSON.stringify(liRichText)); // Log rich text
 
       // Process nested list elements recursively to get child blocks
       let nestedChildrenBlocks = [];
@@ -118,19 +121,23 @@ function convertElementToNotionBlock($, element) {
               nestedChildrenBlocks.push(...convertElementToNotionBlock($, nestedLi));
           });
       });
+      console.log(`[Debug LI] Generated nestedChildrenBlocks count: ${nestedChildrenBlocks.length}`); // Log nested blocks
 
       // Only create list item if it has text content or nested children
       const liTextContent = liRichText.map(rt => rt.text?.content || '').join('');
-      if(liTextContent.trim() || nestedChildrenBlocks.length > 0) {
-      blocks.push({
-          object: 'block',
-          type: itemType,
-          [itemType]: {
-              rich_text: liRichText.length > 0 ? liRichText : [{type: 'text', text: {content: ''}}], // Notion requires rich_text
-                  // Notion API expects nested list items as 'children' of their parent list item block
-              children: nestedChildrenBlocks.length > 0 ? nestedChildrenBlocks : undefined 
-          },
-      });
+      const shouldCreateBlock = liTextContent.trim() || nestedChildrenBlocks.length > 0;
+      console.log(`[Debug LI] Should create block? ${shouldCreateBlock} (Text content: "${liTextContent}", Nested count: ${nestedChildrenBlocks.length})`); // Log condition check
+
+      if(shouldCreateBlock) {
+          blocks.push({
+              object: 'block',
+              type: itemType,
+              [itemType]: {
+                  rich_text: liRichText.length > 0 ? liRichText : [{type: 'text', text: {content: ''}}], // Notion requires rich_text
+                      // Notion API expects nested list items as 'children' of their parent list item block
+                  children: nestedChildrenBlocks.length > 0 ? nestedChildrenBlocks : undefined 
+              },
+          });
       }
       break;
 
@@ -684,7 +691,7 @@ function convertHtmlToNotionBlocksInternal(htmlString) {
   } catch (error) {
     // Provide more context in error logging if possible
     console.error("[HTML->Notion] Error parsing HTML:", error.message); 
-    console.error("Input HTML (first 500 chars):", htmlString?.substring(0, 500)); // Log beginning of failing HTML
+    // console.error("Input HTML (first 500 chars):", htmlString?.substring(0, 500)); // Keep commented
     return []; // Return empty array on error
   }
 }

@@ -10,14 +10,20 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: 'https://backend.syncsched.com',
+        changeOrigin: true,
+        secure: false
+      },
+      '/auth': {
+        target: 'https://backend.syncsched.com',
         changeOrigin: true,
         secure: false
       }
     },
+    host: '0.0.0.0',
     allowedHosts: [
       'localhost',
-      '.ngrok-free.app'
+      'frontend.syncsched.com'
     ]
   },
   resolve: {

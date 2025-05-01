@@ -1,7 +1,7 @@
 import { Client } from "@notionhq/client";
 import { WebflowClient } from 'webflow-api';
-import { get_notion_access_token } from './fetch-notion.js'; // Assuming this uses pg for now
-import { getAccessToken as getWebflowAccessToken } from './fetch-webflow.js'; // Assuming this uses pg for now
+import { get_notion_access_token } from '../services/fetch-notion.js';
+import { getWebflowToken } from '../database/save-webflowInfo.js';
 import pLimit from 'p-limit';
 
 // --- Configuration ---
@@ -11,70 +11,72 @@ const WEBFLOW_NOTION_ID_FIELD_SLUG = 'notion-page-id';  // Slug for the field in
 
 // Rate limiting for API calls
 const notionLimit = pLimit(1); // Limit Notion API concurrency
-const webflowLimit = pLimit(1); // Limit Webflow API concurrency
+const webflowLimit = pLimit(1); // Limit Webflow API 
 
-// --- Placeholder Client Initialization ---
-// TODO: Refactor token management (use Supabase or consolidate pg usage)
-async function getNotionClient() {
+// --- Client Initialization (Now Requires userId) ---
+
+async function getNotionClient(userId) {
+    if (!userId) throw new Error("User ID required for getNotionClient");
     try {
-        const token = await get_notion_access_token(); // From fetch-notion.js
-        if (!token) throw new Error("Notion access token not found.");
+        const token = await get_notion_access_token(userId); // Use DB function with userId
+        if (!token) throw new Error(`Notion access token not found for user ${userId}.`);
         return new Client({ auth: token });
     } catch (error) {
-        console.error("Failed to initialize Notion client:", error.message);
-        throw new Error("Could not initialize Notion client.");
+        console.error(`Failed to initialize Notion client for user ${userId}:`, error.message);
+        // Throw a more specific error
+        throw new Error(`Could not initialize Notion client for user ${userId}.`);
     }
 }
 
-async function getWebflowClient() {
+async function getWebflowClient(userId) {
+     if (!userId) throw new Error("User ID required for getWebflowClient");
     try {
-        const accessToken = await getWebflowAccessToken(); // From fetch-webflow.js
-        if (!accessToken) throw new Error("Webflow access token not found.");
+        const accessToken = await getWebflowToken(userId); // Use DB function with userId
+        if (!accessToken) throw new Error(`Webflow access token not found for user ${userId}.`);
         return new WebflowClient({ accessToken });
     } catch (error) {
-        console.error("Failed to initialize Webflow client:", error.message);
-        throw new Error("Could not initialize Webflow client.");
+        console.error(`Failed to initialize Webflow client for user ${userId}:`, error.message);
+        // Throw a more specific error
+        throw new Error(`Could not initialize Webflow client for user ${userId}.`);
     }
 }
 
-// --- Notion Linking Functions ---
+// --- Notion Linking Functions (Now Require userId) ---
 
 /**
  * Ensures a specific property exists in a Notion database schema.
  * Adds the property if it's missing.
+ * @param {string} userId - The ID of the authenticated Supabase user.
  * @param {string} notionDbId - The ID of the Notion database.
  * @returns {Promise<object|null>} - The property object if it exists or was created, null on error.
  */
-export const ensureNotionWebflowIdProperty = notionLimit(async (notionDbId) => {
+export async function CreateNotionIdProperty(userId, notionDbId) {
     if (!notionDbId) {
-        console.error("[ensureNotionWebflowIdProperty] Missing notionDbId.");
+        console.error("[CreateNotionIdProperty] Missing notionDbId.");
         return null;
     }
-    console.log(`[Notion Link] Ensuring property '${NOTION_WEBFLOW_ID_PROPERTY_NAME}' exists in DB ${notionDbId}...`);
-    const notion = await getNotionClient();
+    if (!userId) {
+         console.error("[CreateNotionIdProperty] Missing userId.");
+         return null;
+    }
+    const notion = await getNotionClient(userId);
     try {
         const dbInfo = await notion.databases.retrieve({ database_id: notionDbId });
         const properties = dbInfo.properties;
 
         if (properties[NOTION_WEBFLOW_ID_PROPERTY_NAME]) {
-            console.log(`[Notion Link] Property '${NOTION_WEBFLOW_ID_PROPERTY_NAME}' already exists in DB ${notionDbId}.`);
             return properties[NOTION_WEBFLOW_ID_PROPERTY_NAME];
         } else {
-            console.log(`[Notion Link] Property '${NOTION_WEBFLOW_ID_PROPERTY_NAME}' not found. Adding...`);
             const newPropertySchema = {
                 [NOTION_WEBFLOW_ID_PROPERTY_NAME]: {
-                    // Using rich_text is generally safer and simpler than URL for IDs
                     rich_text: {}
-                    // Alternatively, use URL type if you prefer:
-                    // url: {}
+
                 }
             };
             await notion.databases.update({
                 database_id: notionDbId,
                 properties: newPropertySchema,
             });
-            console.log(`[Notion Link] Successfully added property '${NOTION_WEBFLOW_ID_PROPERTY_NAME}' to DB ${notionDbId}.`);
-            // Retrieve again to confirm and return the new property object
             const updatedDbInfo = await notion.databases.retrieve({ database_id: notionDbId });
             return updatedDbInfo.properties[NOTION_WEBFLOW_ID_PROPERTY_NAME];
         }
@@ -82,33 +84,34 @@ export const ensureNotionWebflowIdProperty = notionLimit(async (notionDbId) => {
         console.error(`[Notion Link] Error ensuring Notion property in DB ${notionDbId}:`, error.body ? JSON.stringify(error.body) : error.message);
         return null;
     }
-});
+}
 
 /**
  * Updates a specific property on a Notion page with the Webflow Item ID.
+ * @param {string} userId - The ID of the authenticated Supabase user.
  * @param {string} notionPageId - The ID of the Notion page to update.
  * @param {string} webflowItemId - The Webflow Item ID to store.
  * @returns {Promise<boolean>} - True if successful, false otherwise.
  */
-export const updateNotionPageWithWebflowId = notionLimit(async (notionPageId, webflowItemId) => {
+export async function updateNotionPageWithWebflowId(userId, notionPageId, webflowItemId) {
      if (!notionPageId || !webflowItemId) {
         console.error("[updateNotionPageWithWebflowId] Missing notionPageId or webflowItemId.");
         return false;
     }
-    console.log(`[Notion Link] Updating Notion page ${notionPageId} property '${NOTION_WEBFLOW_ID_PROPERTY_NAME}' with Webflow ID ${webflowItemId}...`);
-    const notion = await getNotionClient();
+    if (!userId) {
+         console.error("[updateNotionPageWithWebflowId] Missing userId.");
+         return false;
+    }
+    const notion = await getNotionClient(userId);
     try {
         const propertiesToUpdate = {
             [NOTION_WEBFLOW_ID_PROPERTY_NAME]: {
-                // Ensure format matches the property type defined in ensureNotionWebflowIdProperty
                 rich_text: [
                     {
                         type: 'text',
                         text: { content: webflowItemId }
                     }
                 ]
-                // If using URL type:
-                // url: `https://webflow.com/item/${webflowItemId}` // Example URL structure
             }
         };
 
@@ -116,93 +119,121 @@ export const updateNotionPageWithWebflowId = notionLimit(async (notionPageId, we
             page_id: notionPageId,
             properties: propertiesToUpdate,
         });
-        console.log(`[Notion Link] Successfully updated Notion page ${notionPageId} with Webflow ID ${webflowItemId}.`);
         return true;
     } catch (error) {
         console.error(`[Notion Link] Error updating Notion page ${notionPageId} with Webflow ID:`, error.body ? JSON.stringify(error.body) : error.message);
         return false;
     }
-});
+}
 
 
-// --- Webflow Linking Functions ---
+// --- Webflow Linking Functions (Now Require userId) ---
 
 /**
- * Ensures a specific "PlainText" field exists in a Webflow collection schema.
- * Adds the field if it's missing.
+ * Attempts to create the standard "Notion Page ID" PlainText field in a Webflow collection.
+ * Handles errors gracefully if the field already exists.
+ * @param {string} userId - The ID of the authenticated Supabase user.
  * @param {string} webflowCollectionId - The ID of the Webflow collection.
- * @returns {Promise<object|null>} - The field object if it exists or was created, null on error.
+ * @returns {Promise<boolean>} - True if the field likely exists (either created or already present), false on other errors.
  */
-export const ensureWebflowNotionIdField = webflowLimit(async (webflowCollectionId) => {
+export async function ensureWebflowNotionIdField(userId, webflowCollectionId) {
     if (!webflowCollectionId) {
         console.error("[ensureWebflowNotionIdField] Missing webflowCollectionId.");
-        return null;
+        return false;
     }
-    console.log(`[Webflow Link] Ensuring field '${WEBFLOW_NOTION_ID_FIELD_NAME}' (slug: ${WEBFLOW_NOTION_ID_FIELD_SLUG}) exists in Collection ${webflowCollectionId}...`);
-    const webflow = await getWebflowClient();
+     if (!userId) {
+         console.error("[ensureWebflowNotionIdField] Missing userId.");
+         return false;
+    }
+    const webflow = await getWebflowClient(userId);
     try {
+        // 1. Check if the field already exists by fetching collection details
         const collection = await webflow.collections.get(webflowCollectionId);
-        const existingField = collection.fields?.find(f => f.slug === WEBFLOW_NOTION_ID_FIELD_SLUG);
+        const existingField = collection.fields?.find(field => field.displayName === WEBFLOW_NOTION_ID_FIELD_NAME);
 
         if (existingField) {
-            console.log(`[Webflow Link] Field '${WEBFLOW_NOTION_ID_FIELD_SLUG}' already exists in Collection ${webflowCollectionId}.`);
-            // Optional: Check if type is PlainText and log warning/error if not
-            if (existingField.type !== 'PlainText') {
-                 console.warn(`[Webflow Link] WARNING: Existing field '${WEBFLOW_NOTION_ID_FIELD_SLUG}' in Collection ${webflowCollectionId} is type '${existingField.type}', expected 'PlainText'. Linking might fail.`);
-            }
-            return existingField;
-        } else {
-            console.log(`[Webflow Link] Field '${WEBFLOW_NOTION_ID_FIELD_SLUG}' not found. Adding...`);
-            const newFieldData = {
-                type: 'PlainText',
-                displayName: WEBFLOW_NOTION_ID_FIELD_NAME,
-                slug: WEBFLOW_NOTION_ID_FIELD_SLUG,
-                required: false,
-                helpText: 'Stores the ID of the corresponding Notion page for sync purposes.',
-            };
-            const createdField = await webflow.collections.createField(webflowCollectionId, newFieldData);
-            console.log(`[Webflow Link] Successfully added field '${WEBFLOW_NOTION_ID_FIELD_SLUG}' to Collection ${webflowCollectionId}.`);
-            return createdField;
+            // console.log(`[Webflow Link] Field '${WEBFLOW_NOTION_ID_FIELD_NAME}' already exists in Collection ${webflowCollectionId}.`);
+            return true; // Field already exists
         }
+
+        // 2. If not found, attempt to create it
+        // console.log(`[Webflow Link] Field '${WEBFLOW_NOTION_ID_FIELD_NAME}' not found. Attempting to create...`);
+        const newFieldData = {
+            type: 'PlainText',
+            displayName: WEBFLOW_NOTION_ID_FIELD_NAME, // Webflow will auto-generate the slug
+        };
+        await webflow.collections.fields.create(webflowCollectionId, newFieldData);
+        // console.log(`[Webflow Link] Successfully created field '${WEBFLOW_NOTION_ID_FIELD_NAME}' in Collection ${webflowCollectionId}.`);
+        return true; // Field created successfully
+
     } catch (error) {
-        console.error(`[Webflow Link] Error ensuring Webflow field in Collection ${webflowCollectionId}:`, error.response?.data || error.message);
-        return null;
+        // Log errors that occur during fetching or creation (excluding the 'already exists' case handled above)
+        const errorData = error.response?.data;
+        const errorMessage = errorData?.message || errorData?.msg || error.message || '';
+        const errorCode = errorData?.code;
+
+        // Avoid logging expected 400 if the field *was* found but creation was still attempted (shouldn't happen with the check)
+        // Log other errors
+        console.error(`[Webflow Link] Error ensuring Webflow field '${WEBFLOW_NOTION_ID_FIELD_NAME}' in Collection ${webflowCollectionId}:`);
+        console.error(`  - Status: ${error.response?.status}`);
+        console.error(`  - Code: ${errorCode || 'N/A'}`);
+        console.error(`  - Message: ${errorMessage}`);
+        if (errorData) {
+             console.error(`  - Body: ${JSON.stringify(errorData)}`);
+        }
+        return false; // Indicate failure
     }
-});
+}
 
 /**
- * Updates a specific field on a Webflow item with the Notion Page ID.
+ * Updates a specific Webflow collection item with the Notion Page ID.
+ * @param {string} userId - The ID of the authenticated Supabase user.
  * @param {string} webflowCollectionId - The ID of the Webflow collection.
  * @param {string} webflowItemId - The ID of the Webflow item to update.
- * @param {string} notionPageId - The Notion Page ID to store.
+ * @param {string} notionPageId - The Notion Page ID to store in the item.
+ * @param {Array<object>} [webflowFieldsSchema] - Optional: The fields schema for the collection to avoid an extra API call.
  * @returns {Promise<boolean>} - True if successful, false otherwise.
  */
-export const updateWebflowItemWithNotionId = webflowLimit(async (webflowCollectionId, webflowItemId, notionPageId) => {
+export async function updateWebflowItemWithNotionId(userId, webflowCollectionId, webflowItemId, notionPageId, webflowFieldsSchema = null) {
     if (!webflowCollectionId || !webflowItemId || !notionPageId) {
-        console.error("[updateWebflowItemWithNotionId] Missing webflowCollectionId, webflowItemId, or notionPageId.");
+        console.error("[updateWebflowItemWithNotionId] Missing required arguments.");
         return false;
     }
-    console.log(`[Webflow Link] Updating Webflow item ${webflowItemId} in Collection ${webflowCollectionId} field '${WEBFLOW_NOTION_ID_FIELD_SLUG}' with Notion ID ${notionPageId}...`);
-    const webflow = await getWebflowClient();
+    if (!userId) {
+         console.error("[updateWebflowItemWithNotionId] Missing userId.");
+         return false;
+    }
+
+    const webflow = await getWebflowClient(userId);
     try {
+        let notionIdField = null;
+
+        // Use provided schema if available
+        
+            const collection = await webflow.collections.get(webflowCollectionId);
+            notionIdField = collection.fields?.find(field => field.displayName === WEBFLOW_NOTION_ID_FIELD_NAME);
+  
+
+        if (!notionIdField) {
+            console.error(`[Webflow Link] Field '${WEBFLOW_NOTION_ID_FIELD_NAME}' not found in collection ${webflowCollectionId}. Ensure the field exists or was passed correctly.`);
+            return false;
+        }
+        // Use the ACTUAL slug from the found field object
+        const actualSlug = notionIdField.slug;
+        // console.log(`[Webflow Link] Found slug '${actualSlug}' for field '${WEBFLOW_NOTION_ID_FIELD_NAME}'`);
+
         const fieldsToUpdate = {
-            [WEBFLOW_NOTION_ID_FIELD_SLUG]: notionPageId,
-             // Important: Specify publishing status. Set to false to save as draft, true to publish.
-            // Or omit them if you want patchItem behavior (though patch might not be standard in all SDK versions)
-            _archived: false,
-            _draft: false, // Set to true if you want to save as draft initially
+            [actualSlug]: notionPageId 
         };
 
-        // Use updateItem (safer, replaces all fields implicitly)
-        // or patchItem if available and preferred (only updates specified fields)
-        await webflow.items.updateItem(webflowCollectionId, webflowItemId, { fields: fieldsToUpdate });
-        // If using patchItem:
-        // await webflow.items.patchItem(webflowCollectionId, webflowItemId, { fields: fieldsToUpdate });
+        delete fieldsToUpdate._id; 
+        delete fieldsToUpdate['item-id']; 
 
-        console.log(`[Webflow Link] Successfully updated Webflow item ${webflowItemId} with Notion ID ${notionPageId}.`);
+        await webflow.collections.items.updateItem(webflowCollectionId, webflowItemId, { fieldData: fieldsToUpdate });
         return true;
     } catch (error) {
-        console.error(`[Webflow Link] Error updating Webflow item ${webflowItemId} with Notion ID:`, error.response?.data || error.message);
+        console.error(`[Webflow Link] Error updating Webflow item ${webflowItemId} in collection ${webflowCollectionId}:`, error.response?.data || error.message);
         return false;
     }
-}); 
+}
+

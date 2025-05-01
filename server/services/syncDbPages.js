@@ -1,9 +1,13 @@
 // server/services/syncNotionPages.js
 import pLimit from 'p-limit';
-import { getCollectionItems } from './fetch-webflow.js';
 import { convertHtmlToNotionBlocks } from '../utils/htmlToNotion.js';
 import { NotionInit } from './syncDbProp.js';
-import { updateNotionPageWithWebflowId, ensureNotionWebflowIdProperty } from './establishLink.js';
+import { 
+    updateNotionPageWithWebflowId, 
+    CreateNotionIdProperty, 
+    ensureWebflowNotionIdField,
+    updateWebflowItemWithNotionId
+} from './establishLink.js';
 
 /**
  * Maps Webflow item field data to Notion page properties format.
@@ -12,9 +16,10 @@ import { updateNotionPageWithWebflowId, ensureNotionWebflowIdProperty } from './
  * @param {object} webflowItemFieldData - The fieldData object from a Webflow item.
  * @param {object} notionDbPropertiesSchema - The properties schema of the target Notion database.
  * @param {Array<object>} webflowFieldsSchema - The fields schema for the Webflow collection.
+ * @param {object} webflowItem - The full Webflow item object (including top-level metadata like isDraft, lastPublished).
  * @returns {object} - Notion properties object for page creation/update.
  */
-function mapWebflowItemToNotionProperties(webflowItemFieldData, notionDbPropertiesSchema, webflowFieldsSchema) {
+function mapWebflowItemToNotionProperties(webflowItemFieldData, notionDbPropertiesSchema, webflowFieldsSchema, webflowItem) {
     const notionProperties = {};
 
     // Find the field designated as 'Name' in Webflow (usually 'name' slug or explicitly named 'Name')
@@ -37,21 +42,24 @@ function mapWebflowItemToNotionProperties(webflowItemFieldData, notionDbProperti
         // Skip the 'Name' property as it's handled above
         if (notionPropName === 'Name') continue;
 
+        // Skip the 'Status' and 'Scheduled Publish Time' properties as they are handled after this loop
+        if (notionPropName === 'Status' || notionPropName === 'Scheduled Publish Time') continue;
+
         // Find the corresponding Webflow field by display name
         const webflowField = webflowFieldsSchema.find(wfField => wfField.displayName === notionPropName);
         if (!webflowField) {
+            // Skip if Notion property doesn't have a matching Webflow field name
             continue;
         }
 
         const webflowFieldSlug = webflowField.slug;
         let webflowValue = webflowItemFieldData[webflowFieldSlug];
 
-        // *** ADDED: Skip RichText, Reference, MultiReference types here ***
-        if (['RichText', 'Reference', 'MultiReference'].includes(webflowField.type)) {
-            // console.log(`DEBUG: Skipping property mapping for field '${notionPropName}' (Webflow Type: ${webflowField.type})`);
+        // Skip specific types handled later or not at all in this function
+        if (['RichText', 'Reference', 'MultiReference', 'Option', 'Set'].includes(webflowField.type)) {
+            // console.log(`DEBUG: Skipping property mapping for field '${notionPropName}' (Webflow Type: ${webflowField.type}) - Handled elsewhere or N/A here.`);
             continue;
         }
-        // *** END ADDED ***
 
         // Debug log for each field mapping
         // console.log(`DEBUG: Mapping field '${notionPropName}' (type: ${notionPropConfig.type}, slug: ${webflowFieldSlug}) value:`, webflowValue);
@@ -138,109 +146,6 @@ function mapWebflowItemToNotionProperties(webflowItemFieldData, notionDbProperti
                     }
                     notionValue = { checkbox: boolValue };
                     break;
-                case 'select':
-                    // Webflow 'Option' value is the option name/id string
-                    if (typeof webflowValue === 'string' && webflowValue.trim()) {
-                        // Find the corresponding option name in the Notion schema (case-insensitive compare)
-                        const matchingOption = notionPropConfig.select.options.find(opt => opt.name.toLowerCase() === webflowValue.toLowerCase());
-                        if (matchingOption) {
-                             notionValue = { select: { name: matchingOption.name } };
-                        } else {
-                            // Option might not exist in Notion schema yet, log a warning
-                            // console.warn(`Select option '${webflowValue}' for field '${notionPropName}' not found in Notion schema.`);
-                            // Optionally, create the option here if permissions allow (requires separate DB update)
-                        }
-                    } else if (webflowValue && typeof webflowValue === 'object') {
-                        // Try to extract a value from an object
-                        let optionValue = null;
-                        if (webflowValue.value) {
-                            optionValue = webflowValue.value;
-                        } else if (webflowValue.name) {
-                            optionValue = webflowValue.name;
-                        } else if (webflowValue.id) {
-                            optionValue = webflowValue.id;
-                        } else {
-                            // As a last resort, stringify the object
-                            optionValue = JSON.stringify(webflowValue);
-                        }
-                        
-                        if (optionValue) {
-                            const matchingOption = notionPropConfig.select.options.find(
-                                opt => opt.name.toLowerCase() === String(optionValue).toLowerCase()
-                            );
-                            
-                            if (matchingOption) {
-                                notionValue = { select: { name: matchingOption.name } };
-                            } else {
-                                // console.warn(`Select option '${optionValue}' for field '${notionPropName}' not found in Notion schema.`);
-                            }
-                        }
-                    }
-                    break;
-                case 'multi_select':
-                    // Handle different types of WebFlow multi-select values
-                    let multiSelectValues = [];
-                    
-                    // Case 1: Array of strings or values
-                    if (Array.isArray(webflowValue)) {
-                        multiSelectValues = webflowValue.map(item => {
-                            if (typeof item === 'string') return item;
-                            if (item && typeof item === 'object') {
-                                // Extract from object - try common properties
-                                return item.value || item.name || item.id || JSON.stringify(item);
-                            }
-                            return String(item); // Fallback for numbers, etc.
-                        });
-                    } 
-                    // Case 2: Comma-separated string
-                    else if (typeof webflowValue === 'string' && webflowValue.includes(',')) {
-                        multiSelectValues = webflowValue.split(',').map(v => v.trim()).filter(Boolean);
-                    } 
-                    // Case 3: Object with array property
-                    else if (webflowValue && typeof webflowValue === 'object' && !Array.isArray(webflowValue)) {
-                        // Try to find an array property
-                        const arrayProp = Object.values(webflowValue).find(val => Array.isArray(val));
-                        if (arrayProp) {
-                            multiSelectValues = arrayProp.map(item => {
-                                if (typeof item === 'string') return item;
-                                return item?.value || item?.name || item?.id || String(item);
-                            });
-                        } else {
-                            // Single object - treat as one value
-                            multiSelectValues = [webflowValue.value || webflowValue.name || webflowValue.id || JSON.stringify(webflowValue)];
-                        }
-                    }
-                    // Case 4: Single value that's not an array or object with array
-                    else if (webflowValue) {
-                        multiSelectValues = [String(webflowValue)];
-                    }
-                    
-                    if (multiSelectValues.length > 0) {
-                        const validOptions = multiSelectValues
-                            .map(wfOpt => {
-                                const optStr = String(wfOpt).trim();
-                                const matchingOption = notionPropConfig.multi_select.options.find(
-                                    nOpt => nOpt.name.toLowerCase() === optStr.toLowerCase()
-                                );
-                                return matchingOption ? { name: matchingOption.name } : null;
-                            })
-                            .filter(Boolean); // Filter out nulls (options not found in Notion)
-
-                        if (multiSelectValues.length > validOptions.length) {
-                           // console.warn(`Some multi-select options for field '${notionPropName}' were not found in the Notion schema.`);
-                            // Log the options that weren't found
-                            const foundOptions = validOptions.map(o => o.name.toLowerCase());
-                            const missingOptions = multiSelectValues
-                                .filter(o => !foundOptions.includes(String(o).toLowerCase()))
-                                .join(', ');
-                            // console.warn(`  Missing options: ${missingOptions}`);
-                        }
-                        
-                        if (validOptions.length > 0) {
-                           notionValue = { multi_select: validOptions };
-                        }
-                    }
-                    break;
                 case 'url':
                 case 'email':
                 case 'phone_number': // Notion type is 'phone_number'
@@ -310,14 +215,15 @@ function mapWebflowItemToNotionProperties(webflowItemFieldData, notionDbProperti
 
                 case 'relation':
                     // Relations are handled *after* initial page creation by linkNotionRelations
-                    // console.log(`Skipping relation property '${notionPropName}' during initial page creation.`);
+                    // AND relation *values* are handled by syncReferenceAndOptionValues
+                    // console.log(`Skipping relation property '${notionPropName}' during initial property mapping.`);
                     break;
 
                 default:
                     // console.warn(`Unsupported Notion property type '${notionPropConfig.type}' encountered during mapping for field '${notionPropName}'.`);
             }
         } catch (mapError) {
-             // console.error(`Error mapping property '${notionPropName}' (Webflow Slug: ${webflowFieldSlug}, Type: ${notionPropConfig.type}):`, mapError.message);
+             console.error(`Error mapping property '${notionPropName}' (Webflow Slug: ${webflowFieldSlug}, Type: ${notionPropConfig.type}):`, mapError.message);
              // console.error(`  Webflow Value:`, webflowValue);
              notionValue = null; // Ensure property is not set if mapping fails
         }
@@ -327,6 +233,69 @@ function mapWebflowItemToNotionProperties(webflowItemFieldData, notionDbProperti
             notionProperties[notionPropName] = notionValue;
         }
     }
+
+    // --- Status Mapping & Scheduled Time Logic (using webflowItem directly) --- 
+    const isDraft = webflowItem?.isDraft;
+    const publishedOn = webflowItem?.lastPublished;
+    const updatedOn = webflowItem?.lastUpdated;
+    let notionStatus = "Published"; // Default assumption
+
+    // Use webflowItem.id for logging
+    const wfItemIdForLog = webflowItem?.id || 'unknown'; 
+    console.log(`[Debug Status] WF Item ID: ${wfItemIdForLog}, isDraft: ${isDraft}, lastPublished: ${publishedOn}, lastUpdated: ${updatedOn}`);
+
+    if (isDraft === true) {
+        notionStatus = "Draft";
+    // Check for "Draft Changes": Not a draft, last updated AFTER last published
+    } else if (publishedOn && updatedOn && new Date(updatedOn) > new Date(publishedOn)) { 
+        notionStatus = "Draft Changes";
+    // Check for "Scheduled": Not a draft, published_on is in the future
+    } else if (publishedOn) { 
+        try {
+            const publishDate = new Date(publishedOn);
+            console.log(`[Debug Status] WF Item ID: ${wfItemIdForLog}, Parsed publishDate: ${publishDate.toISOString()}, Is future? ${publishDate > new Date()}`);
+            if (!isNaN(publishDate.getTime()) && publishDate > new Date()) {
+                notionStatus = "Scheduled";
+            }
+            // Otherwise, it remains "Published"
+        } catch (e) {
+            console.warn(`Could not parse published_on date: ${publishedOn}`);
+        }
+    }
+    // Default is "Published" if none of the above conditions are met
+    
+    console.log(`[Debug Status] WF Item ID: ${wfItemIdForLog}, Determined Notion Status: ${notionStatus}`);
+
+    // Map to Notion "Status" property
+    if (notionDbPropertiesSchema["Status"]?.type === 'select') {
+        // Ensure the determined status is a valid option
+        const validStatusOptions = notionDbPropertiesSchema["Status"].select.options.map(opt => opt.name);
+        if (validStatusOptions.includes(notionStatus)) {
+             notionProperties["Status"] = { select: { name: notionStatus } };
+        } else {
+             console.warn(`[Status Mapping] Determined status "${notionStatus}" is not a valid option for the Notion 'Status' property. Defaulting to 'Draft' or check Notion config.`);
+             // Default to 'Draft' or another safe default if the calculated status isn't a valid option
+             notionProperties["Status"] = { select: { name: "Draft" } }; 
+        }
+    } else {
+         console.warn(`[Status Mapping] Notion property "Status" is missing or not a Select type for DB related to WF item ${wfItemIdForLog}.`);
+    }
+
+    // If scheduled, populate the "Scheduled Publish Time" property
+    if (notionStatus === "Scheduled" && notionDbPropertiesSchema["Scheduled Publish Time"]?.type === 'date' && publishedOn) {
+        try {
+            const scheduleDate = new Date(publishedOn);
+            if (!isNaN(scheduleDate.getTime())) {
+                notionProperties["Scheduled Publish Time"] = { date: { start: scheduleDate.toISOString() } };
+            }
+        } catch(e) {
+            console.warn(`Could not parse scheduled date for "Scheduled Publish Time": ${publishedOn}`);
+        }
+    } // Clear the scheduled date if status is no longer scheduled
+    else if (notionDbPropertiesSchema["Scheduled Publish Time"]?.type === 'date') {
+         notionProperties["Scheduled Publish Time"] = { date: null };
+    }
+    // --- END: Status Mapping & Scheduled Time Logic ---
 
     return notionProperties;
 }
@@ -383,7 +352,7 @@ function extractAndConvertRichTextToBlocks(webflowItemFieldData, webflowFieldsSc
         
         if (contentToProcess && typeof contentToProcess === 'string') {
              try {
-                 console.log(`   Converting RichText content from field '${field.displayName}' (Slug: ${field.slug})`);
+                 // console.log(`   Converting RichText content from field '${field.displayName}' (Slug: ${field.slug})`);
                 // Add some debug info about the content
                 // console.log(`   Content length: ${contentToProcess.length} chars, starts with: ${contentToProcess.substring(0, 50)}...`);
                 
@@ -432,7 +401,7 @@ function extractAndConvertRichTextToBlocks(webflowItemFieldData, webflowFieldsSc
             try {
                 const blocks = convertHtmlToNotionBlocks(content);
                 if (blocks && blocks.length > 0) {
-                    console.log(`   Converting potential HTML content from field '${field.displayName}'`);
+                    // console.log(`   Converting potential HTML content from field '${field.displayName}'`);
                     // Add a heading block indicating the source field
                     notionBlocks.push({
                         object: 'block',
@@ -461,186 +430,127 @@ function extractAndConvertRichTextToBlocks(webflowItemFieldData, webflowFieldsSc
 }
 
 /**
- * Synchronizes items from Webflow collections to corresponding Notion database pages.
- * Creates or updates Notion pages based on Webflow item data.
- * @param {Array<object>} createdDatabasesInfo - Array containing info about linked Notion DBs and Webflow Collections.
- * @returns {Promise<{success: boolean, created: number, updated: number, skipped: number, failed: number}>}
+ * Syncs Webflow items to Notion pages, creates pages, sets basic properties, 
+ * converts rich text, and establishes links between items and pages.
+ * 
+ * @param {string} userId - The ID of the authenticated Supabase user.
+ * @param {Array<object>} createdDatabasesInfo - Info about linked Notion DBs/Webflow Collections.
+ * @param {Array<{collectionId: string, collectionName: string, fields: Array<object>, items: Array<object>}>} allWebflowData - The comprehensive data fetched from Webflow.
+ * @returns {Promise<{webflowItemToNotionPageMap: Map<string, string>, stats: object}>}
  */
-export async function syncWebflowItemsToNotionPages(createdDatabasesInfo) {
-    console.log("Starting Webflow -> Notion page synchronization...");
-    let stats = { success: true, created: 0, updated: 0, skipped: 0, failed: 0 };
+export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo, allWebflowData) {
+    if (!userId) throw new Error("User ID required for syncWebflowItemsToNotionPages");
+    const { notion } = await NotionInit(userId); // Initialize Notion client once with userId
+    // Remove internal fetch of items
+    // const allItemsData = await getCollectionItems(); 
 
-    if (!createdDatabasesInfo || createdDatabasesInfo.length === 0) {
-        console.log("No linked databases provided. Skipping page sync.");
-        return { ...stats, success: false, message: "No linked databases provided." };
-    }
+    // Create a map from collectionId to its full data for easier lookup
+    const webflowDataMap = new Map(allWebflowData.map(data => [data.collectionId, data]));
 
-    const { notion } = await NotionInit();
-    const limit = pLimit(2); // Notion API recommends lower concurrency (e.g., 3 req/sec)
+    const limit = pLimit(2); // Notion API concurrency limit
+    const webflowItemToNotionPageMap = new Map();
+    let stats = { created: 0, updatedLinks: 0, failedCreation: 0, failedLinkUpdate: 0 };
 
-    // Ensure the Webflow Item ID property exists in all target databases first
-    // This runs concurrently but is limited by notionLimit inside establishLink.js
-    const propertyCheckPromises = createdDatabasesInfo.map(dbInfo =>
-        ensureNotionWebflowIdProperty(dbInfo.notionDbId)
-    );
-    await Promise.all(propertyCheckPromises);
-    console.log("Finished ensuring Webflow Item ID properties exist in target Notion databases.");
+    // Ensure linking fields exist (do this once per collection before processing items)
+    const linkingFieldsSetupPromises = createdDatabasesInfo.map(dbInfo => limit(async () => {
+        const webflowCollectionData = webflowDataMap.get(dbInfo.webflowCollectionId);
+        if (!webflowCollectionData) return; // Should not happen if data is consistent
 
+        // Ensure Notion property exists - Pass userId
+                     await CreateNotionIdProperty(userId, dbInfo.notionDbId);
+        // Ensure Webflow field exists - Pass userId
+        await ensureWebflowNotionIdField(userId, dbInfo.webflowCollectionId);
+    }));
+    await Promise.all(linkingFieldsSetupPromises);
 
-    // Fetch all Webflow items for the relevant collections *once*
-    let allWebflowItemsByCollection = {};
-    try {
-        // Assuming getCollectionItems fetches items for ALL collections by default
-        // If not, you might need to pass specific collection IDs based on createdDatabasesInfo
-        const fetchedItemsData = await getCollectionItems();
-        fetchedItemsData.forEach(colData => {
-            allWebflowItemsByCollection[colData.collectionId] = colData.items || [];
-        });
-    } catch (error) {
-        console.error("Fatal error fetching Webflow items:", error);
-        return { ...stats, success: false, message: "Failed to fetch Webflow items.", error: error };
-    }
+    // --- Main Logic Loop: Iterate through Notion DBs --- 
+    const allSyncPromises = createdDatabasesInfo.flatMap(dbInfo => {
+        const { notionDbId, webflowCollectionId, notionDbProperties } = dbInfo;
+        const webflowCollectionData = webflowDataMap.get(webflowCollectionId);
 
-    const syncPromises = createdDatabasesInfo.flatMap(dbInfo => {
-        const { notionDbId, webflowCollectionId, webflowFields, notionDbProperties } = dbInfo;
-        const webflowItems = allWebflowItemsByCollection[webflowCollectionId];
-
-        if (!webflowItems) {
-            console.warn(`No Webflow items found or fetched for Collection ID: ${webflowCollectionId}`);
-            return []; // Skip this database if no items
-        }
-        if (!notionDbId) {
-            console.warn(`Skipping sync for Webflow Collection ${webflowCollectionId} due to missing Notion DB ID.`);
-            stats.skipped += webflowItems.length;
-            return [];
+        if (!webflowCollectionData || !webflowCollectionData.items || webflowCollectionData.items.length === 0) {
+            // console.log(`No items found in fetched data for Webflow Collection ID: ${webflowCollectionId}`);
+            return []; // No items to process for this DB
         }
 
-        console.log(`Processing ${webflowItems.length} items for Notion DB ${notionDbId} (from Webflow Collection ${webflowCollectionId})...`);
+        const webflowFieldsSchema = webflowCollectionData.fields;
+        const itemsToSync = webflowCollectionData.items;
 
-        return webflowItems.map(item => limit(async () => {
-            const webflowItemId = item._id; // Webflow item's unique ID
-            const webflowItemFieldData = item.fieldData || item; // Adjust based on actual structure
-            let notionPageId = null;
+        // --- Process Items within the Collection --- 
+        return itemsToSync.map(item => limit(async () => {
+            const webflowItemId = item.id;
+
+            // ADDED: Skip archived items
+            if (item.isArchived) {
+                console.log(`[Sync Skip] Skipping archived Webflow item ${webflowItemId}`);
+                return; // Don't process this item further
+            }
+
+            const webflowItemFieldData = item.fieldData || {};
+            // Check if page already exists (e.g., from a previous partial run)
+            // This requires fetching/querying Notion - potentially complex
+            // For now, assumes we always create.
 
             try {
-                // 1. Prepare Notion Properties (excluding Webflow Item ID initially)
+                // 1. Map Properties & Convert Content
                 const notionPageProperties = mapWebflowItemToNotionProperties(
-                    webflowItemFieldData,
+                    webflowItemFieldData, 
                     notionDbProperties,
-                    webflowFields
+                    webflowFieldsSchema,
+                    item
                 );
-
-                // 2. Prepare Notion Content Blocks (if applicable)
-                const notionContentBlocks = await extractAndConvertRichTextToBlocks(
+                const notionPageBlocks = extractAndConvertRichTextToBlocks(
                     webflowItemFieldData,
-                    webflowFields
+                    webflowFieldsSchema
                 );
 
-                // 3. Check if Notion page already exists (Query by Webflow Item ID)
-                let existingPage = null;
-                try {
-                    const queryResponse = await notion.databases.query({
-                        database_id: notionDbId,
-                        filter: {
-                            property: 'Webflow Item ID', // Use the constant name
-                            rich_text: {
-                                equals: webflowItemId,
-                            },
-                        },
-                        page_size: 1 // We only expect one match
-                    });
-                    if (queryResponse.results.length > 0) {
-                        existingPage = queryResponse.results[0];
-                        notionPageId = existingPage.id;
-                    }
-                } catch (queryError) {
-                    // Handle cases where the property might not exist yet or query fails
-                    if (queryError.code === 'validation_error') { // Property might not exist
-                         console.warn(`[Sync Warning] Query for Webflow Item ID failed for DB ${notionDbId}. Property might be missing or type mismatch. Will attempt creation.`);
-                    } else {
-                        console.error(`[Sync Error] Failed to query Notion for existing page (Webflow ID: ${webflowItemId}) in DB ${notionDbId}:`, queryError.body || queryError.message);
-                        // Decide if we should continue or fail this item
-                    }
-                    // Continue, attempt creation if query fails
-                }
+               
 
-                // 4. Create or Update Notion Page
-                if (existingPage) {
-                    // --- Update Existing Page ---
-                    console.log(`Updating Notion page ${existingPage.id} for Webflow item ${webflowItemId}...`);
-                    try {
-                        // Update properties
-                        await notion.pages.update({
-                            page_id: existingPage.id,
+                // 2. Create Notion Page
+                        const newPage = await notion.pages.create({
+                            parent: { database_id: notionDbId },
                             properties: notionPageProperties,
-                            // Note: Archiving/Unarchiving can be handled here if needed
-                            // archived: false,
+                            children: notionPageBlocks.length > 0 ? notionPageBlocks : undefined,
                         });
-
-                        // TODO: Update Content Blocks - More complex
-                        // Need to delete existing blocks then add new ones.
-                        // Be cautious with this to avoid accidental data loss.
-                        // Consider a block diffing strategy for partial updates if necessary.
-
-                        console.log(` -> Updated properties for Notion page ${existingPage.id}`);
-                        stats.updated++;
-                    } catch (updateError) {
-                         console.error(`❌ Failed to update Notion page ${existingPage.id}:`, updateError.body || updateError.message);
-                         stats.failed++;
-                         return; // Skip linking if update failed
-                    }
-
-                } else {
-                    // --- Create New Page ---
-                    console.log(`Creating new Notion page for Webflow item ${webflowItemId} in DB ${notionDbId}...`);
-                    try {
-                    const newPage = await notion.pages.create({
-                        parent: { database_id: notionDbId },
-                        properties: notionPageProperties,
-                            children: notionContentBlocks.length > 0 ? notionContentBlocks : undefined,
-                        });
-                        notionPageId = newPage.id;
-                        console.log(` -> Created Notion page ${newPage.id}`);
+                const notionPageId = newPage.id;
+                webflowItemToNotionPageMap.set(webflowItemId, notionPageId);
                         stats.created++;
-                    } catch (createError) {
-                        console.error(`❌ Failed to create Notion page for Webflow item ${webflowItemId}:`, createError.body || createError.message);
-                        console.error("   Properties attempted:", JSON.stringify(notionPageProperties, null, 2));
-                        console.error("   Content blocks attempted:", JSON.stringify(notionContentBlocks, null, 2));
-                        stats.failed++;
-                        return; // Skip linking if creation failed
-                    }
-                }
 
-                // 5. Establish Link (Update Notion Page with Webflow ID) - AFTER successful create/update
-                if (notionPageId && webflowItemId) {
-                    const linkSuccess = await updateNotionPageWithWebflowId(notionPageId, webflowItemId);
-                    if (!linkSuccess) {
-                        console.warn(`[Sync Warning] Failed to update Notion page ${notionPageId} with Webflow Item ID ${webflowItemId} after creation/update.`);
-                        // Decide if this should increment 'failed' stat or just be a warning
-                    }
+                // 3. Update Links (pass userId, schema to avoid extra WF call)
+                const notionLinkSuccess = await updateNotionPageWithWebflowId(userId, notionPageId, webflowItemId);
+                const webflowLinkSuccess = await updateWebflowItemWithNotionId(
+                    userId,
+                    webflowCollectionId,
+                    webflowItemId,
+                    notionPageId
+                );
+
+                if (notionLinkSuccess && webflowLinkSuccess) {
+                    stats.updatedLinks++;
                 } else {
-                     console.warn(`[Sync Warning] Skipping link update for Webflow item ${webflowItemId} due to missing Notion Page ID.`);
+                    stats.failedLinkUpdate++;
+                    // Log which link failed if needed
                 }
 
             } catch (error) {
-                console.error(`❌ Unexpected error processing Webflow item ${webflowItemId}:`, error);
-                stats.failed++;
+                stats.failedCreation++;
+                console.error(`Failed to create Notion page for Webflow item ${webflowItemId} in DB ${notionDbId}:`, error.body ? JSON.stringify(error.body) : error.message);
+                // Optionally: Log failing properties/blocks
+                // console.error(`  Properties: ${JSON.stringify(notionPageProperties)}`);
+                // console.error(`  Blocks: ${JSON.stringify(notionPageBlocks)}`);
             }
-        })); // End limit wrapper
-    }); // End flatMap
+        })); // End limit wrapper for item
+    }); // End flatMap for databases    
 
+    // --- Wait for all updates --- 
     try {
-        await Promise.all(syncPromises);
-        console.log("Webflow -> Notion page synchronization process finished.");
-        console.log("Sync Stats:", stats);
+        await Promise.all(allSyncPromises);
     } catch (error) {
-        console.error("Error during Promise.all for sync tasks:", error);
-        stats.success = false;
-        stats.message = "Error occurred during sync operations execution.";
-        stats.error = error;
+        // This catch might be less likely to hit if individual errors are caught
+        console.error("Error occurred during final Promise.all for page sync updates:", error);
     }
 
-    return stats;
+    return { webflowItemToNotionPageMap, stats };
 }
 
 // --- Potentially keep or remove the old syncNotionPages if it's redundant ---

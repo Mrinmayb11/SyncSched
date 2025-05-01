@@ -1,20 +1,28 @@
 // webflowService.js
 import { WebflowClient } from 'webflow-api';
 import 'dotenv/config';
-import { db_client } from '../config/database.js';
+import { getWebflowToken } from '../database/save-webflowInfo.js'; 
 
-// Get access token from DB
-export async function getAccessToken() {
+
+async function getAccessToken(userId) { 
+  if (!userId) {
+      // This function is called internally by others in this file.
+      // The userId needs to be passed down from the initial call (e.g., in syncOrchestrator or API route)
+      console.error('getAccessToken in fetch-webflow.js requires a userId.');
+      throw new Error("User ID not provided to getAccessToken.");
+  }
   try {
-    const result = await db_client.query("SELECT access_token FROM cms_users ORDER BY id DESC LIMIT 1");
-    // Add a check in case no token is found
-    if (!result.rows || result.rows.length === 0 || !result.rows[0].access_token) {
-        console.error('No Webflow access token found in cms_users table.');
-        return null; 
+    // Use the new function, passing the userId
+    const token = await getWebflowToken(userId);
+    if (!token) {
+         console.error(`No Webflow token found in Supabase for user ${userId}.`);
     }
-    return result.rows[0].access_token;
+    return token;
+    // Old query:
+    // const result = await db_client.query("SELECT access_token FROM cms_users ORDER BY id DESC LIMIT 1");
+    // return result.rows[0].access_token;
   } catch (error) {
-    console.error('Error retrieving token from DB:', error.message);
+    console.error('Error retrieving Webflow token via database.js:', error.message);
     return null;
   }
 }
@@ -25,8 +33,9 @@ export async function getAccessToken() {
 
 
 // Fetch collections from Webflow
-export async function getCollections() {
-  const accessToken = await getAccessToken();
+// MUST NOW ACCEPT userId
+async function getCollections(userId) {
+  const accessToken = await getAccessToken(userId); // Pass userId
   if (!accessToken) return [];
   const webflow = new WebflowClient({ accessToken });
   
@@ -46,9 +55,11 @@ export async function getCollections() {
 }
 
 // Fetch fields for each collection
-export async function getCollectionFields() {
+// MUST NOW ACCEPT userId
+async function getCollectionFields(userId) {
   try {
-    const collectionsResult = await getCollections();
+    // Pass userId down
+    const collectionsResult = await getCollections(userId);
 
     if (!collectionsResult || !collectionsResult.collections || !collectionsResult.access_token) {
       console.error("getCollections did not return the expected structure. Aborting getCollectionFields.");
@@ -58,7 +69,7 @@ export async function getCollectionFields() {
     const { collections, access_token } = collectionsResult;
 
     if (!collections || collections.length === 0) {
-         console.log("No collections found to fetch fields for.");
+        //  console.log("No collections found to fetch fields for."); // Removed log
          return [];
     }
 
@@ -89,7 +100,7 @@ export async function getCollectionFields() {
 
     // Filter out null results and log the final structure for debugging
     const finalResults = fieldResults.filter(Boolean);
-    // console.log('DEBUG: Final structure of collection fields being returned:', JSON.stringify(finalResults, null, 2)); 
+    // console.log('DEBUG: Final structure of collection fields being returned:', JSON.stringify(finalResults, null, 2)); // Keep commented
     return finalResults;
 
   } catch (error) {
@@ -99,13 +110,16 @@ export async function getCollectionFields() {
 }
 
 
-export async function getCollectionItems(){
+// MUST NOW ACCEPT userId
+async function getCollectionItems(userId){
   try {
-    const {collections, access_token} = await getCollections();
-    const collectionFields = await getCollectionFields();
+    // Pass userId down
+    const {collections, access_token} = await getCollections(userId);
+    // Pass userId down
+    const collectionFields = await getCollectionFields(userId); 
     
     if (!collectionFields || collectionFields.length === 0) {
-      console.log("No collections found");
+    //   console.log("No collections found"); // Removed log
       return [];
     }
 
@@ -137,14 +151,18 @@ export async function getCollectionItems(){
   }
 }
 
-export async function getCollectionItem(){
+// MUST NOW ACCEPT userId
+async function getCollectionItem(userId){
   try {
-    const {collections, access_token} = await getCollections();
-    const collectionFields = await getCollectionFields();
-    const collectionItems = await getCollectionItems();
+    // Pass userId down
+    const {collections, access_token} = await getCollections(userId);
+    // Pass userId down
+    const collectionFields = await getCollectionFields(userId);
+    // Pass userId down
+    const collectionItems = await getCollectionItems(userId);
 
     if (!collectionItems || collectionItems.length === 0) {
-      console.log("No collections found");
+    //   console.log("No collections found"); // Removed log
       return [];
     }
     
@@ -161,5 +179,97 @@ export async function getCollectionItem(){
   }
 }
 
-// --- Add this code to call the function and log the result ---
+/**
+ * Fetches all relevant data from Webflow: Collections, their fields, and their items.
+ * Performs fetches efficiently by initializing the client once.
+ * @param {string} userId - The ID of the user whose Webflow data should be fetched.
+ * @returns {Promise<Array<{collectionId: string, collectionName: string, fields: Array<object>, items: Array<object>}>>}
+ */
+async function fetchAllWebflowData(userId) { // MUST NOW ACCEPT userId
+    const accessToken = await getAccessToken(userId); // Pass userId
+    if (!accessToken) {
+        console.error(`Failed to get Webflow access token for user ${userId}. Cannot fetch data.`);
+        return [];
+    }
+    const webflow = new WebflowClient({ accessToken });
+    let siteId = null;
 
+    // 1. Get Site ID
+    try {
+        const sitesResponse = await webflow.sites.list();
+        if (!sitesResponse?.sites?.length) {
+            console.error("No Webflow sites found for this token.");
+            return [];
+        }
+        siteId = sitesResponse.sites[0].id;
+    } catch (error) {
+        console.error('Error fetching Webflow sites:', error.message);
+        return [];
+    }
+
+    // 2. Get Collections List
+    let collectionsList = [];
+    try {
+        const collectionsResponse = await webflow.collections.list(siteId);
+        collectionsList = collectionsResponse?.collections || [];
+        if (collectionsList.length === 0) {
+            console.log("No collections found in the Webflow site.");
+            return [];
+        }
+    } catch (error) {
+        console.error('Error fetching Webflow collections:', error.message);
+        return [];
+    }
+
+    // 3. Fetch Fields and Items for each Collection
+    const detailedCollectionsData = await Promise.all(collectionsList.map(async (collection) => {
+        let fields = [];
+        let items = [];
+
+        // Fetch Fields
+        try {
+            const collectionData = await webflow.collections.get(collection.id);
+            fields = collectionData.fields.map((field) => ({
+                displayName: field.displayName,
+                slug: field.slug,
+                type: field.type,
+                validations: field.validations,
+                id: field.id
+            }));
+        } catch (error) {
+            console.error(`Failed to fetch fields for collection ${collection?.displayName || collection?.id}:`, error.message);
+            // Decide if we should continue without fields or return null/empty for this collection
+        }
+
+        // Fetch Items
+        try {
+             // Add pagination logic here if needed for collections with > 100 items
+            const itemsResponse = await webflow.collections.items.listItems(collection.id);
+            items = itemsResponse.items || [];
+        } catch (error) {
+            console.error(`Error fetching items for collection ${collection.displayName}:`, error.message);
+            // Decide if we should continue without items or return null/empty for this collection
+        }
+
+        return {
+            collectionId: collection.id,
+            collectionName: collection.displayName,
+            fields: fields,
+            items: items
+        };
+    }));
+
+    return detailedCollectionsData.filter(Boolean); // Filter out any potential nulls if error handling decides to return null
+}
+
+
+// --- Add this code to call the function and log the result ---
+// Update exported functions to reflect the need for userId
+export { 
+    getAccessToken, // Internal function, likely not needed to be exported
+    getCollections, 
+    getCollectionFields, 
+    getCollectionItems, 
+    getCollectionItem, 
+    fetchAllWebflowData // Keep this export
+};

@@ -4,13 +4,14 @@ import 'dotenv/config';
 import cors from 'cors';
 
 import { Webflow_AuthLink } from './api/cms/auth/webflowOauth.js'
-import { W_Auth_db, W_Collection_db }  from './database/database.js';
+import { W_Auth_db, W_Collection_db }  from './database/save-webflowInfo.js';
 import { WebflowClient } from 'webflow-api';
 import protectedRoutes from "./api/auth/protected.js";
 import notionAuthRouter from "./api/auth/notion_auth.js";
 import { getCollections, getCollectionFields } from "./services/fetch-webflow.js";
-import  createAndPopulateDatabases  from "./services/syncDbProp.js";
-import runFullSyncProcess from './services/syncDbProp.js';
+import { CreateDatabases } from "./services/syncDbProp.js";
+import { runFullSyncProcess } from './services/syncOrchestrator.js';
+import { requireAuth } from './config/supabase.js';
 
 
 
@@ -39,8 +40,6 @@ app.get('/auth', async (req, res) => {
     console.warn('No platform specified in auth request, using "webflow" as default');
   }
   
-  console.log(`Auth request for platform: ${platform || 'webflow'}`);
-  
   try {
     const authorizeURL = await Webflow_AuthLink(platform || 'webflow');
     res.redirect(authorizeURL);
@@ -56,93 +55,128 @@ async function getAccessToken(code) {
     clientId: process.env.WEBFLOW_CLIENT_ID,
     clientSecret: process.env.WEBFLOW_SECRET,
     code: code,
-    redirectUri: process.env.REDIRECT_URI,
+    redirectUri: process.env.WEBFLOW_REDIRECT_URI,
   });
-  
-  // Log the full response object to see all fields
-  console.log('Full token response:', JSON.stringify(tokenResponse, null, 2));
   
   return tokenResponse;
 }
 
-// Get Webflow code
-app.get('/api/save-platform-connection', async (req, res) => {
-  const { code, state } = req.query;
 
-  // Check if state exists before trying to split it
-  if (!state) {
-    console.error('No state parameter provided in callback');
-    return res.status(400).send('Missing state parameter. Authorization failed.');
-  }
 
-  // Extract the platform from state
-  let stateValue, platform;
+
+
+
+// Renamed and changed to POST. Handles the final step after frontend redirect.
+app.post('/api/webflow/complete-auth', requireAuth, async (req, res) => {
   try {
-    const stateParts = state.split('|');
-    stateValue = stateParts[0];
-    platform = stateParts[1];
-    
-    // Handle missing platform
-    if (!platform) {
-      console.warn('No platform specified in state parameter');
-      platform = 'unknown';
+    // Get userId from the authenticated request (verified by requireAuth)
+    const userId = req.user?.id;
+    if (!userId) {
+      console.error('User ID not found after authentication in /api/webflow/complete-auth');
+      return res.status(401).send('Authentication failed or user ID missing.');
     }
-  } catch (error) {
-    console.error('Error parsing state parameter:', error);
-    return res.status(400).send('Invalid state format');
-  }
-  
-  // Validate state
-  if (stateValue !== process.env.STATE) {
-    console.error('State validation failed', { 
-      expected: process.env.STATE, 
-      received: stateValue 
-    });
-    return res.status(400).send('State does not match. Authorization failed.');
-  }
 
-  try {
-    const tokenResponse = await getAccessToken(code);
-    console.log('Token response:', tokenResponse);
-    
-    if (!tokenResponse) {
-      console.error('Invalid token response:', tokenResponse);
-      return res.status(500).send('Failed to get valid access token');
+    // Extract code and state from the request BODY (sent by frontend)
+    const { code, state } = req.body;
+
+    if (!code || !state) {
+      console.error('Missing code or state in request body');
+      return res.status(400).send('Missing code or state parameter from frontend.');
     }
-    
-    // Save both token and platform in one operation
-    await W_Auth_db(tokenResponse, platform);
-    
-    // After successful authentication, fetch and save collections
+
+    // Extract the platform from state
+    let stateValue, platform;
     try {
-      const collections = await getCollections();
-      if (collections && Array.isArray(collections)) {
-        await W_Collection_db(collections);
-        console.log('Collections saved to database and token cleared');
+      const stateParts = state.split('|');
+      stateValue = stateParts[0];
+      platform = stateParts[1] || 'unknown';
+    } catch (error) {
+      console.error('Error parsing state parameter:', error);
+      return res.status(400).send('Invalid state format');
+    }
+
+    if (stateValue !== process.env.STATE) {
+      console.error('State validation failed', { 
+        expected: process.env.STATE, 
+        received: stateValue 
+      });
+      return res.status(400).send('State does not match. Authorization failed.');
+    }
+
+    // Pass the FRONTEND redirect URI here as it must match the initial request
+    const accessToken = await getAccessToken(code);
+    console.log('Value of accessToken immediately after await:', accessToken); // DEBUG LOG
+    
+    if (!accessToken) { 
+      console.error('Invalid token response from Webflow helper'); 
+      return res.status(500).send('Failed to get valid access token from Webflow');
+    }
+
+    // Save token and platform
+    console.log(`Attempting to save Webflow token for user ${userId}...`);
+    await W_Auth_db(userId, accessToken, platform);
+    console.log(`Successfully saved Webflow token for user ${userId}.`);
+
+    // Fetch and save collections
+    console.log(`Attempting to fetch/save collections for user ${userId}...`);
+    try {
+      console.log(`Calling getCollections for user ${userId}...`);
+      const collectionsResult = await getCollections(userId);
+      console.log(`Received collections result for user ${userId}:`, JSON.stringify(collectionsResult));
+
+      const collections = collectionsResult?.collections;
+
+      if (collections && Array.isArray(collections) && collections.length > 0) {
+        console.log(`Found ${collections.length} collections. Attempting to save...`);
+        await W_Collection_db(userId, collections);
+        console.log(`Collections saved for user ${userId} after Webflow auth.`);
+      } else {
+        console.log(`No new collections found or collections format invalid for user ${userId}. Raw result:`, JSON.stringify(collectionsResult));
       }
     } catch (collectionError) {
-      console.error('Error saving collections:', collectionError);
-      // Continue with redirect even if collection saving fails
+      console.error(`Error fetching/saving collections for user ${userId}:`, collectionError);
     }
-    
-    // Redirect the user back to the frontend
-    res.redirect('http://localhost:3000');
+
+    // Success response
+    console.log(`Completing request successfully for user ${userId}.`);
+    res.status(200).json({ message: 'Webflow authentication completed successfully.' });
 
   } catch (error) {
-    console.error('Error during OAuth process:', error);
-    res.status(500).send('Internal Server Error');
+    console.error('ERROR in /api/webflow/complete-auth:', error);
+
+    if (error.response && error.response.data) {
+      console.error('Webflow API Error details:', error.response.data);
+      return res.status(500).json({ 
+        message: 'Error communicating with Webflow API', 
+        details: error.response.data 
+      });
+    } else {
+      return res.status(500).json({ message: 'Internal Server Error during Webflow auth completion.' });
+    }
   }
 });
 
-// Create a proxy endpoint for Webflow collections
 
-app.get('/api/webflow/collections', async (req, res) => {
+
+
+
+
+app.get('/api/webflow/collections', requireAuth, async (req, res) => {
+  // Get userId from the authenticated request
+  const userId = req.user?.id;
+  if (!userId) {
+    console.error('User ID not found after authentication in /api/webflow/collections');
+    return res.status(401).json({ error: 'Authentication failed or user ID missing.' });
+  }
+
   try {
-    console.log('Received request for Webflow collections');
-    const collections = await getCollections();
+    // Fetch collections FOR THIS USER
+    const collectionsResult = await getCollections(userId);
     
-    res.json(Array.isArray(collections) ? collections : 
-             collections.collections ? collections.collections : []);
+    // Adjust response based on actual structure returned by getCollections
+    const collections = collectionsResult?.collections || [];
+    
+    res.json(collections);
   } catch (error) {
     console.error('Error fetching Webflow collections:', error);
     res.status(500).json({ error: 'Failed to fetch collections' });
@@ -150,26 +184,18 @@ app.get('/api/webflow/collections', async (req, res) => {
 });
 
 
-
-app.get('/api/webflow/fetch-webflow-data', async (req, res) => {
-  const collectionFields = await getCollectionFields();
-
-  const notionPages = await createAndPopulateDatabases();
-
-  if (notionPages) {
-    res.redirect('http://localhost:3000/dashboard/notion-to-blogs?notion_auth=success');
-  } else {
-    res.status(500).json({ error: 'Failed to create Notion pages' });
+app.post('/api/sync/start', requireAuth, async (req, res) => {
+ 
+  const userId = req.user?.id;
+  if (!userId) {
+    console.error('User ID not found after authentication in /api/sync/start');
+    return res.status(401).json({ error: 'Authentication failed or user ID missing.' });
   }
-});
 
-
-app.post('/api/sync/start', async (req, res) => {
-  console.log("Received request to start sync process...");
+  console.log(`Received request to start sync process for user ${userId}...`);
   try {
-    // Consider running this asynchronously if it takes a very long time
-    // For now, run it directly and wait for completion
-    const syncResult = await runFullSyncProcess();
+    // Call the sync orchestrator function, PASSING userId
+    const syncResult = await runFullSyncProcess(userId);
 
     if (syncResult.success) {
       console.log("Sync process completed successfully (from API endpoint).");
@@ -197,8 +223,6 @@ app.post('/api/sync/start', async (req, res) => {
 });
 
 
-
-// Start the server only if this file is run directly
 if (process.env.NODE_ENV !== 'test') {
   app.listen(port, () => {
     console.log(`Server running on port ${port}`);

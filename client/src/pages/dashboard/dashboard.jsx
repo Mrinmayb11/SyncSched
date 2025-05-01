@@ -6,6 +6,8 @@ import Sidebar from '@/pages/dashboard/dashboard components/Sidebar'; // Import 
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2 } from "lucide-react"; // Example loading icon
+// Removed Supabase client import, now handled by axiosInstance
+import axiosInstance from '@/lib/axiosInstance'; // Import the configured Axios instance
 
 export default function Dashboard() {
   const location = useLocation();
@@ -40,29 +42,29 @@ export default function Dashboard() {
     setIsSyncing(true);
     setSyncResult(null);
     setSyncError(null);
-    setAuthMessage(null); // Clear previous auth messages
+    setAuthMessage(null); 
 
     try {
-      console.log('Calling /api/sync/start...');
-      const response = await fetch('http://localhost:5000/api/sync/start', { // Ensure port matches your server
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        // Add body if needed by backend, e.g., { userId: 'some_user_id' }
-      });
+      // Make request using axiosInstance - Auth header added automatically
+      console.log('Calling /api/sync/start via Axios...');
+      // Use axiosInstance.post(). Pass empty object {} if no body data is needed.
+      const response = await axiosInstance.post('http://localhost:5000/api/sync/start', {}); 
+      
+   
+      const result = response.data; // Data is directly in response.data
+      console.log('Sync API response (Axios):', result);
 
-      const result = await response.json();
-      console.log('Sync API response:', result);
-
-      if (response.ok && result.status === 'success') {
+      // Check the structure of the successful response
+      if (result.status === 'success') { 
         setSyncResult(result.message || 'Sync completed successfully!');
       } else {
-        throw new Error(result.message || 'Sync failed. Check server logs.');
+        // If backend sends 200 OK but with an error status in the body
+        throw new Error(result.message || 'Sync reported failure.');
       }
     } catch (error) {
-      console.error('Error calling sync API:', error);
-      setSyncError(error.message || 'An error occurred during sync.');
+      // Error handling might be improved by the response interceptor now
+      console.error('Error calling sync API (Axios catch): ', error.response?.data || error.message);
+      setSyncError(error.response?.data?.message || error.message || 'An error occurred during sync.');
     } finally {
       setIsSyncing(false);
     }

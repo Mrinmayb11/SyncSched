@@ -1,56 +1,46 @@
 import { Client } from "@notionhq/client";
 import 'dotenv/config';
 import pLimit from 'p-limit';
-import { getCollectionFields, getCollectionItems } from './fetch-webflow.js';
-import { save_access_token, get_notion_access_token, parent_page_id } from './fetch-notion.js';
+import { get_notion_access_token, parent_page_id } from './fetch-notion.js';
 
 
 
-async function NotionInit() {
+
+async function NotionInit(userId) {
+    if (!userId) throw new Error("User ID required for NotionInit");
     try {
-        const token = await get_notion_access_token();
+        const token = await get_notion_access_token(userId);
         if (!token) {
-             throw new Error("Notion access token not found.");
+             throw new Error(`Notion access token not found for user ${userId}.`);
         }
         return { notion: new Client({ auth: token }), notionToken: token };
     } catch (error) {
-        console.error("Failed to initialize Notion client:", error.message);
-        // Rethrow or handle appropriately depending on desired application behavior
-        throw new Error("Could not initialize Notion client. Is the token saved and valid?");
+        console.error(`Failed to initialize Notion client for user ${userId}:`, error.message);
+        throw new Error(`Could not initialize Notion client for user ${userId}. Is the token saved and valid?`);
     }
 }
 
 
+async function createNotionPages(userId, webflowCollectionsStructure) {
+    if (!userId) throw new Error("User ID required for createNotionPages");
+    const { notion, notionToken } = await NotionInit(userId);
 
-
-export async function createNotionPages() {
-    const { notion, notionToken } = await NotionInit();
-    let collectionFields;
-    try {
-        collectionFields = await getCollectionFields();
-    } catch (error) {
-        console.error("Failed to get Webflow collection fields:", error);
-        return []; // Stop if we can't get Webflow info
-    }
-
-
-    if (!collectionFields || collectionFields.length === 0) {
-        console.log("No Webflow collections found to create pages for.");
+    // Use the passed argument
+    if (!webflowCollectionsStructure || webflowCollectionsStructure.length === 0) {
         return [];
     }
 
-    const parentId = await parent_page_id(notionToken); // Assuming this handles potential errors
+    const parentId = await parent_page_id(notionToken); // This uses the token, doesn't need userId directly
 
     if (!parentId) {
         console.error("Could not determine Notion parent page ID. Cannot create pages.");
         return [];
     }
 
-    console.log(`Creating Notion pages under parent ID: ${parentId}`);
-
     const limit = pLimit(1); // Keep concurrency at 1
 
-    const pageCreationPromises = collectionFields.map(collection => limit(async () => {
+    // Use webflowCollectionsStructure here
+    const pageCreationPromises = webflowCollectionsStructure.map(collection => limit(async () => {
         if (!collection.collectionId) {
             console.warn(`Skipping page creation for collection named '${collection.collectionName}' because it lacks a collectionId.`);
             return null;
@@ -58,7 +48,6 @@ export async function createNotionPages() {
 
         const createPageAttempt = async (isRetry = false) => {
             try {
-                console.log(`Attempting to create page for: ${collection.collectionName} (Webflow ID: ${collection.collectionId})${isRetry ? ' (Retry)' : ''}`);
                 const page = await notion.pages.create({
                     parent: { type: 'page_id', page_id: parentId },
                     properties: {
@@ -67,7 +56,6 @@ export async function createNotionPages() {
                         }
                     }
                 });
-                console.log(`✅ Created Notion page for ${collection.collectionName} (ID: ${page.id})`);
                 return { page, collectionData: collection };
             } catch (error) {
                 // Retry ONLY on conflict error, and only once
@@ -102,18 +90,21 @@ export async function createNotionPages() {
     return createdPageResults; // Filter out nulls from failed attempts or skipped collections
 }
 
-
-
-
 function mapingFields(webflowFields) {
     const propertiesSchema = {};
     propertiesSchema["Name"] = { title: {} };
+    
+    // Add the Webflow Item ID property from the start
+    propertiesSchema["Webflow Item ID"] = { rich_text: {} };
+
+    // ADDED: Add Scheduled Publish Time property (Date type)
+    propertiesSchema["Scheduled Publish Time"] = { date: {} };
 
     webflowFields.forEach(field => {
         const fieldType = field.type;
         const fieldName = field.displayName;
 
-        if (!fieldName || fieldName === "Name") return;
+        if (!fieldName || fieldName === "Name" || fieldName === "Webflow Item ID" || fieldName === "Notion Page ID") return;
         if (propertiesSchema[fieldName]) {
              console.warn(`Duplicate property name detected: '${fieldName}'. Skipping subsequent definition.`);
              return;
@@ -127,7 +118,6 @@ function mapingFields(webflowFields) {
                 notionPropertyConfig = { rich_text: {} };
                 break;
             case 'RichText': // Handle RichText during schema creation
-                console.log(`   -> Mapping field '${fieldName}' (Type: ${fieldType}) as temporary rich_text during DB creation.`);
                 notionPropertyConfig = { rich_text: {} }; // Create as placeholder
                 break;
             case 'Number':
@@ -149,9 +139,8 @@ function mapingFields(webflowFields) {
                  break;
             case 'Reference':
             case 'MultiReference':
-                 // Create as rich_text placeholder to avoid validation errors
-                 console.log(`   -> Mapping field '${fieldName}' (Type: ${fieldType}) as temporary rich_text.`);
-                 notionPropertyConfig = { rich_text: {} }; // Placeholder!
+                 // REVERTING: Create as rich_text placeholder initially
+                 notionPropertyConfig = { rich_text: {} }; 
                  break;
             case 'Link':
             case 'VideoLink':
@@ -183,22 +172,19 @@ function mapingFields(webflowFields) {
     return propertiesSchema;
 }
 
-
-
-
-export async function CreateDatabases() {
-    const { notion } = await NotionInit();
-
-    const createdPageResults = await createNotionPages();
+// Accept userId and webflowCollectionsStructure as arguments
+async function CreateDatabases(userId, webflowCollectionsStructure) {
+    if (!userId) throw new Error("User ID required for CreateDatabases");
+    
+    const createdPageResults = await createNotionPages(userId, webflowCollectionsStructure);
 
     if (!createdPageResults || createdPageResults.length === 0) {
-        console.log("No parent pages were created (or Webflow collections found), cannot create databases.");
+        console.log("No Notion pages created, skipping database creation.");
         return [];
     }
 
-    console.log(`Proceeding to create databases inside ${createdPageResults.length} created pages...`);
-
-    const limitDb = pLimit(1); // Limit concurrent DB creations (Reduced from 3 to 1)
+    const { notion } = await NotionInit(userId); // Get notion client instance for DB creation
+    const limitDb = pLimit(1); 
 
     const databaseCreationPromises = createdPageResults.map(({ page, collectionData }) => limitDb(async () => {
         if (!page || !collectionData || !collectionData.collectionId) {
@@ -213,45 +199,59 @@ export async function CreateDatabases() {
         let propertiesSchema = {}; // Define here to be accessible in catch
 
         try {
-            console.log(`Mapping properties for database '${dbTitle}' (from Webflow ID: ${webflowCollectionId}) inside page ${pageId}...`);
             propertiesSchema = mapingFields(webflowFields); // Assign to outer scope variable
 
              if (Object.keys(propertiesSchema).length <= 1 && propertiesSchema["Name"]) {
                  console.warn(`Skipping database creation for '${dbTitle}' as no mappable fields were found besides 'Name'.`);
                  return null;
              }
+             
+            // Add the hardcoded "Sync Status" select property
+            propertiesSchema["Status"] = {
+                select: {
+                    options: [
+                        { name: "Draft", color: "gray" },
+                        { name: "Published", color: "green" },
+                        { name: "Scheduled", color: "blue" },
+                        { name: "Queued to Publish", color: "blue" },
+                        { name: "Draft Changes", color: "orange" },
+                    ]
+                }
+            };
 
-            console.log(`Creating database '${dbTitle}' inside page ${pageId}...`);
+            // add a scheduled property
+           
 
+            // Now propertiesSchema includes both dynamic and hardcoded properties
             const database = await notion.databases.create({
                 parent: { type: 'page_id', page_id: pageId },
                 is_inline: true,
                 title: [{ type: 'text', text: { content: dbTitle } }],
                 properties: propertiesSchema,
             });
-            console.log(`✅ Created database '${dbTitle}' (ID: ${database.id}) linked to Webflow Collection ${webflowCollectionId}`);
+
+            // Return structured info including Webflow details needed later
             return {
                 webflowCollectionId: webflowCollectionId,
-                webflowFields: webflowFields,
+                webflowFields: webflowFields, // Keep fields for relation linking
                 notionDbId: database.id,
-                notionDbProperties: database.properties
+                notionDbName: dbTitle, // Capture the name used
+                notionDbProperties: database.properties // Keep properties for later steps
             };
         } catch (error) {
             console.error(`❌ Failed to create database for '${dbTitle}' (from Webflow ID: ${webflowCollectionId}) inside page ${pageId}:`, error.body ? JSON.stringify(error.body) : error.message);
-            // Log the properties schema that caused the error
-            console.error("--- Schema causing error: ---");
-            console.error(JSON.stringify(propertiesSchema, null, 2));
-            console.error("--- End Schema ---");
             return null;
         }
     }));
 
     const createdDatabasesInfo = (await Promise.all(databaseCreationPromises)).filter(Boolean);
-    console.log(`Finished creating databases. ${createdDatabasesInfo.length} databases successfully created.`);
 
-    return createdDatabasesInfo;
+    // --- REMOVE Save Created Database Info to Supabase logic --- 
+    // if (createdDatabasesInfo.length > 0) { ... } block removed
+    // ----------------------------------------------------------
+
+    return createdDatabasesInfo; // Return the detailed info needed for subsequent steps
 }
-
 
 // --- Helper function findNotionDbIdForWebflowCollection ---
 /**
@@ -265,17 +265,18 @@ function findNotionDbIdForWebflowCollection(targetWebflowCollectionId, databaseM
     return mapping ? mapping.notionDbId : null;
 }
 
-
+// Accept userId
 // --- Modified function to link Notion Relation Properties --- (Focus on conversion)
-export async function linkNotionRelations(createdDatabasesInfo) {
+async function linkNotionRelations(userId, createdDatabasesInfo) {
+    if (!userId) throw new Error("User ID required for linkNotionRelations");
     if (!createdDatabasesInfo || createdDatabasesInfo.length === 0) {
-        console.log("No database information provided. Skipping relation conversion/linking.");
         return [];
     }
 
     let notion;
     try {
-        ({ notion } = await NotionInit());
+        // Pass userId to NotionInit
+        ({ notion } = await NotionInit(userId));
     } catch (error) {
         console.error("Cannot link relations due to Notion client initialization failure:", error);
         return [];
@@ -286,9 +287,6 @@ export async function linkNotionRelations(createdDatabasesInfo) {
         notionDbId: db.notionDbId
     }));
 
-    console.log(`
-Attempting to convert placeholders and link relations for ${createdDatabasesInfo.length} databases...`);
-
     const limitLink = pLimit(1); // Limit concurrent linking operations (Reduced from 3 to 1)
 
     const updatePromises = createdDatabasesInfo.map((dbInfo) => limitLink(async () => {
@@ -297,8 +295,6 @@ Attempting to convert placeholders and link relations for ${createdDatabasesInfo
         let relationsFoundCount = 0;
         let relationsLinkedCount = 0;
         let relationsFailedCount = 0;
-
-        console.log(`Checking for relation placeholders in DB ${notionDbId} (from Webflow Collection ${webflowCollectionId})`);
 
         // Iterate through Webflow fields to find Reference/MultiReference types
         // These correspond to the rich_text placeholders we created earlier.
@@ -309,14 +305,12 @@ Attempting to convert placeholders and link relations for ${createdDatabasesInfo
                 // Check if the corresponding property in Notion is still a rich_text placeholder
                 if (notionDbProperties[propName]?.type === 'rich_text') {
                     relationsFoundCount++;
-                    console.log(`  - Found placeholder property '${propName}' to convert to relation.`);
 
                     const targetWfCollectionId = field.validations?.collectionId;
                     if (targetWfCollectionId) {
                         const targetNotionDbId = findNotionDbIdForWebflowCollection(targetWfCollectionId, simpleMappings);
 
                         if (targetNotionDbId) {
-                            console.log(`    - Converting and linking '${propName}' to Notion DB ${targetNotionDbId}`);
                             // Prepare update payload to CHANGE TYPE and LINK
                             propertiesToUpdate[propName] = {
                                 // Explicitly define the new type and its configuration
@@ -342,7 +336,6 @@ Attempting to convert placeholders and link relations for ${createdDatabasesInfo
                 } else if (notionDbProperties[propName]?.type === 'relation') {
                     // Property already exists as a relation - maybe from a previous run?
                     // We could potentially add logic here to check if it's linked correctly, but for now, just note it.
-                    console.log(`  - Property '${propName}' is already a relation. Skipping conversion.`);
                 } else if (notionDbProperties[propName]) {
                     // Property exists but is neither rich_text nor relation - unexpected
                      console.warn(`    - ⚠️ Property '${propName}' exists but is unexpected type '${notionDbProperties[propName]?.type}'. Skipping conversion.`);
@@ -355,12 +348,10 @@ Attempting to convert placeholders and link relations for ${createdDatabasesInfo
         // If there are properties to update (convert/link)
         if (Object.keys(propertiesToUpdate).length > 0) {
             try {
-                console.log(`  Updating ${Object.keys(propertiesToUpdate).length} property types/links for database ${notionDbId}...`);
                 await notion.databases.update({
                     database_id: notionDbId,
                     properties: propertiesToUpdate,
                 });
-                console.log(`✅ Successfully updated properties for database ${notionDbId}.`);
                 return {
                     notionDbId,
                     status: 'success',
@@ -384,7 +375,6 @@ Attempting to convert placeholders and link relations for ${createdDatabasesInfo
             }
         } else if (relationsFoundCount > 0) {
              // Placeholders found, but none could be converted (e.g., missing targets)
-             console.log(`  Database ${notionDbId} had ${relationsFoundCount} placeholder(s), but none could be converted/linked.`);
              return {
                 notionDbId,
                 status: 'skipped',
@@ -393,15 +383,12 @@ Attempting to convert placeholders and link relations for ${createdDatabasesInfo
                 failed: relationsFailedCount
             };
         } else {
-             // No placeholders found that needed conversion
-             console.log(`  Database ${notionDbId} has no relation placeholders to convert.`);
              return null;
         }
     })); // <-- End of limitLink wrapper
 
     // Wait for all update attempts and filter out nulls (where no action was needed)
     const updateResults = (await Promise.all(updatePromises)).filter(Boolean);
-    console.log("\nFinished attempting to link relations.");
 
     // Optional: Provide a summary of the linking process
     const summary = updateResults.reduce((acc, result) => {
@@ -414,20 +401,8 @@ Attempting to convert placeholders and link relations for ${createdDatabasesInfo
         return acc;
     }, { totalFound: 0, totalLinked: 0, totalFailedAttempt: 0, databasesUpdated: 0, databasesErrored: 0, databasesSkipped: 0 });
 
-    console.log(`Summary: Across ${createdDatabasesInfo.length} databases checked:`);
-    console.log(`  - Found ${summary.totalFound} potential relations.`);
-    console.log(`  - Successfully linked ${summary.totalLinked} relations.`);
-    console.log(`  - Failed to link ${summary.totalFailedAttempt} relations (missing target/data).`);
-    console.log(`  - ${summary.databasesUpdated} databases had relations successfully updated.`);
-    console.log(`  - ${summary.databasesErrored} databases encountered an API error during update.`);
-    console.log(`  - ${summary.databasesSkipped} databases had relations found but none could be linked.`);
-
-
     return updateResults; // Return the detailed results
 }
 
-// REMOVE THE ENTIRE runFullSyncProcess FUNCTION DEFINITION HERE (approx lines 436-466)
-
-// Ensure the exports only include functions defined in *this* file + the imported sync function
-// REMOVE THIS FINAL EXPORT LINE
-// export {  NotionInit, syncWebflowItemsToNotionPages }; 
+// Update exports if needed
+export { NotionInit, createNotionPages, mapingFields, linkNotionRelations, CreateDatabases }; 

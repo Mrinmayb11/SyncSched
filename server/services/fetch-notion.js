@@ -1,62 +1,56 @@
-import { db_client } from '../config/database.js';
+import { supabase } from '../config/supabase.js';
 import { Client } from '@notionhq/client';
 
+/**
+ * Saves Notion OAuth data to the database, associating it with a Supabase user.
+ * @param {string} userId - The Supabase authenticated user ID (auth.users.id).
+ * @param {object} notionOAuthData - The data object received from Notion OAuth callback.
+ *                                    Expected keys: access_token, workspace_id, workspace_name, owner.user.id, owner.user.name
+ * @returns {Promise<string | null>} - The saved access token or null on error.
+ *
 
-export async function save_access_token(data) {
-    try {
-        await db_client.query('BEGIN');
+/**
+ * Retrieves the latest Notion access token for a specific Supabase user.
+ * @param {string} userId - The Supabase authenticated user ID.
+ * @returns {Promise<string | null>} - The access token or null if not found/error.
+ */
+export async function get_notion_access_token(userId) {
+  if (!supabase) {
+    console.error("Supabase client not initialized. Cannot get Notion token.");
+    return null;
+  }
+  if (!userId) {
+    console.error("User ID is required to get Notion token.");
+    return null;
+  }
 
-        const access_token = data.access_token;
-        const workspace_id = data.workspace_id;
-        const workspace_name = data.workspace_name;
-        const user_id = data.owner.user.id;
-        const user_name = data.owner.user.name;
-        
-        const result = await db_client.query(
-            "INSERT INTO notion_auth_info (access_token, workspace_id, workspace_name, user_id, user_name) VALUES ($1, $2, $3, $4, $5) RETURNING access_token",
-            [access_token, workspace_id, workspace_name, user_id, user_name]
-        );
+  try {
+      const { data, error } = await supabase
+          .from('notion_auth_info')
+          .select('access_token')
+          .eq('user_id', userId) // Filter by Supabase user ID
+          .limit(1)
+          .maybeSingle(); // Use maybeSingle to return null if not found
 
-        const notion_access_token = result.rows[0].access_token;
+      if (error) {
+          console.error('Error retrieving Notion token from Supabase:', error);
+          return null; // Return null on error
+      }
 
-        await db_client.query('COMMIT');
-
-        return notion_access_token;
-        
-        
-        
-    } catch (error) {
-        console.error('Error saving Notion auth info:', error);
-        await db_client.query('ROLLBACK');
-        throw error;
-    }
-}
-
-// New function to retrieve the token
-export async function get_notion_access_token() {
-    try {
-        // Query for the most recently added token
-        const result = await db_client.query(
-            "SELECT access_token FROM notion_auth_info ORDER BY created_at DESC LIMIT 1"
-        );
-        if (result.rows.length > 0) {
-            return result.rows[0].access_token;
-        } else {
-            console.error("No Notion access token found in the database.");
-            // Handle appropriately - maybe throw error or return null
-            throw new Error("Notion access token not found."); 
-        }
-    } catch (error) {
-        console.error('Error retrieving Notion token from database:', error);
-        throw error; // Re-throw
-    }
+      if (data && data.access_token) {
+          return data.access_token;
+      } else {
+          // console.warn(`No Notion access token found in Supabase for user ${userId}.`);
+          return null; // Return null if not found
+      }
+  } catch (error) {
+       console.error('Exception in get_notion_access_token function:', error);
+       return null; // Return null on exception
+  }
 }
 
 // Accept token as argument
 export async function parent_page_id(notion_access_token) {
-
-    // Remove internal token fetching:
-    // const notion_access_token = await n_access_token(); 
 
     if (!notion_access_token) {
         throw new Error("Notion access token is required for parent_page_id function.");
@@ -67,7 +61,7 @@ export async function parent_page_id(notion_access_token) {
         auth: notion_access_token,
     });
 
-    try { // Add try...catch for robustness
+    try {
         const page = await notion.search({
             filter:{
                 property:'object',
@@ -77,13 +71,9 @@ export async function parent_page_id(notion_access_token) {
 
         let page_id = null;
 
-        // Check if results exist and log the ID of the first result
         if (page && page.results && page.results.length > 0) {
-            // Assuming we want the *first* page found as the parent. 
-            // You might need more specific logic here depending on your use case.
             page_id = page.results[0].id; 
         } else {
-            console.log("No pages found matching the search criteria to use as parent.");
             // Decide how to handle this: throw error? return null? create a page?
             // For now, returning null.
         }
@@ -91,6 +81,6 @@ export async function parent_page_id(notion_access_token) {
 
     } catch (error) {
         console.error('Error searching for Notion parent page:', error);
-        throw error; // Re-throw
+        throw error;
     }
 }

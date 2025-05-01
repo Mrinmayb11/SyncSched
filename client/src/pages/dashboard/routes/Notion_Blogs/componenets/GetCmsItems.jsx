@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { SelectOption } from "./DropdownSelect";
+import axiosInstance from "@/lib/axiosInstance"; // Import the configured Axios instance
 
 export default function GetCollectionLists() {
   const [cmsItems, setCmsItems] = useState([]);
@@ -10,6 +11,7 @@ export default function GetCollectionLists() {
   async function fetchCollections() {
     try {
       setLoading(true);
+      setError(null); // Reset error on new fetch
       
       // First check for cached collections
       const cachedCollections = localStorage.getItem('webflowCollections');
@@ -33,43 +35,42 @@ export default function GetCollectionLists() {
         }
       }
       
-      // Correct API endpoint for collections
-      console.log("Fetching collections from API");
-      const response = await fetch("http://localhost:5000/api/webflow/collections");
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
-      
-      const collections = await response.json();
-      console.log("API response:", collections);
+      // Make request using axiosInstance - Authorization header is added automatically
+      console.log("Fetching collections from API via Axios...");
+      // Use axiosInstance.get(). The response data is directly in response.data
+      const response = await axiosInstance.get("/api/webflow/collections"); 
+
+      // Axios throws errors for non-2xx responses automatically, 
+      // so the explicit !response.ok check is usually not needed here.
+      // Error handling will be done in the catch block or response interceptor.
+
+      const collections = response.data; // Data is directly in response.data
+      console.log("API response (Axios):", collections);
 
       const formattedCollections = Array.isArray(collections)
         ? collections.map((collection) => ({
             value: collection.id || collection._id, // Use actual unique IDs
             label: collection.displayName || collection.name,
-            href: "#",
+            href: "https://api.notion.com/v1/oauth/authorize?client_id=1cdd872b-594c-804a-87f5-003708c4fbf2&response_type=code&owner=user&redirect_uri=https%3A%2F%2Fd2cf-2401-4900-74e7-98d8-81a9-d90c-1cc9-270d.ngrok-free.app%2Fconnect-notion",
             icon: "",
           }))
         : [];
       
       console.log("Formatted collections:", formattedCollections);
       
-      // Update state
       setCmsItems(formattedCollections);
       
-      // Properly store collections in localStorage as a JSON string
       if (formattedCollections.length > 0) {
-        localStorage.setItem('webflowCollections', JSON.stringify(formattedCollections));
-        setAuthorized(true);
-        console.log("Saved collections to localStorage");
+        // localStorage.setItem('webflowCollections', JSON.stringify(formattedCollections)); // Consider if cache is still needed
+        console.log("Fetched collections successfully");
       } else {
-        console.warn("No collections to save to localStorage");
+        console.warn("No collections received from API");
       }
-      
-      console.log("Fetched collections successfully");
+
     } catch (err) {
-      console.error("Error fetching Webflow collections:", err);
-      setError(err);
+      // Error handling might be improved by the response interceptor now
+      console.error("Error fetching Webflow collections (Axios catch):", err.response?.data || err.message);
+      setError(err.response?.data?.message || err.message || 'Failed to load collections');
     } finally {
       setLoading(false);
     }

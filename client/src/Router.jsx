@@ -12,6 +12,8 @@ import NotionToSocialsPage from "./pages/dashboard/routes/Notion_Socials/NotionT
 import { logoutLoader } from "./pages/login_signup/routes/logout";
 import { loader as authConfirmLoader } from "./pages/login_signup/routes/auth.confirm";
 import  AuthError  from "./pages/login_signup/routes/auth.error";
+import OAuthRedirect from './auth/webflowoauthRedirect';
+import NotionOAuthRedirect from './auth/NotionOAuthRedirect';
 
 
 
@@ -80,5 +82,13 @@ export const router = createBrowserRouter([
   {
     path: "/auth/error",
     element: <AuthError />
+  },
+  {
+    path: "/oauth/callback/webflow",
+    element: <OAuthRedirect />
+  },
+  {
+    path: "/oauth/callback/notion",
+    element: <NotionOAuthRedirect />
   }
 ]);

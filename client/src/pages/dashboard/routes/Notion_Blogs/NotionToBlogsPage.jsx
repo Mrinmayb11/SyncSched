@@ -23,7 +23,7 @@ export default function NotionToBlogsPage() {
     { value: '2', label: 'Shopify', href: 'https://example.com/shopify' },
     { value: '3', label: 'Squarespace', href:'http://localhost:3000/auth', icon:'' },
     { value: '4', label: 'Wix', href:'http://localhost:3000/auth', icon:'' },
-    { value: '5', label: 'Webflow', href:'https://2467-2401-4900-75a4-f380-217f-50cb-5d56-c491.ngrok-free.app/auth', icon:'' },
+    { value: '5', label: 'Webflow', href:'https://backend.syncsched.com/auth', icon:'' },
   ]
 
 

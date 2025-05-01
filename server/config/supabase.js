@@ -1,18 +1,48 @@
 import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
+import 'dotenv/config';
 
-// Load environment variables from .env file
-dotenv.config();
+const supabaseUrl = process.env.SUPABASE_URL;
+// Use the Service Role Key for backend operations
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY; 
 
-// Initialize the Supabase client with server-side credentials
-// Use service role key for admin privileges (careful with this)
-export const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+// Keep Anon key check for verifyToken if needed
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY; 
 
-// Create a function to verify JWT tokens from client requests
+if (!supabaseUrl || !supabaseServiceKey) { // Check for Service Key
+  console.error(
+    'Missing Supabase environment variables (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY). ' +
+    'Make sure they are defined in your .env file.'
+  );
+  // Optionally throw an error or exit, depending on desired behavior
+  // throw new Error("Supabase environment variables are not set.");
+}
+
+// Initialize Supabase client with the SERVICE KEY
+// This client will bypass RLS
+const supabase = (supabaseUrl && supabaseServiceKey)
+  ? createClient(supabaseUrl, supabaseServiceKey)
+  : null;
+
+if (!supabase) {
+    console.error("Supabase client could not be initialized due to missing environment variables.");
+}
+
+// Export the service client (typically just named 'supabase' for backend use)
+export { supabase };
+
+
 export async function verifyToken(req) {
+  // This function NEEDS the anon key to call supabase.auth.getUser
+  // Let's create a temporary client just for this purpose.
+  const tempAnonClient = (supabaseUrl && supabaseAnonKey) 
+    ? createClient(supabaseUrl, supabaseAnonKey) 
+    : null;
+    
+  if (!tempAnonClient) {
+      console.error("Cannot verify token: Supabase Anon client could not be initialized.");
+      return null;
+  }
+  
   try {
     // Extract the Bearer token from the authorization header
     const authHeader = req.headers.authorization;
@@ -22,8 +52,8 @@ export async function verifyToken(req) {
     
     const token = authHeader.split(' ')[1];
     
-    // Verify the token and get user data
-    const { data, error } = await supabaseAdmin.auth.getUser(token);
+    // Verify the token and get user data using the temporary ANONYMOUS client
+    const { data, error } = await tempAnonClient.auth.getUser(token);
     
     if (error) {
       console.error('Token verification error:', error.message);
