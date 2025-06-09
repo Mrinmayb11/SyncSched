@@ -95,9 +95,6 @@ export async function syncRelationValues(userId, createdDatabasesInfo, webflowIt
                         continue; 
                     }
 
-                    // REMOVED: Debug log checking stale notionPropConfig
-                    // console.log(`[Debug Relations Check] Page ${notionPageId}, Field '${notionPropName}', NotionPropConfig:`, notionPropConfig);
-
                     if (notionPropConfig.type === 'relation') {
                         // 1. Get target Webflow Item IDs from the current item's field value
                         let targetWebflowItemIds = []; // Initialize as empty
@@ -110,13 +107,10 @@ export async function syncRelationValues(userId, createdDatabasesInfo, webflowIt
                         }
                         // If wfValue is null, undefined, empty string etc., targetWebflowItemIds remains []
                         
-                        console.log(`[Debug Relations] Page ${notionPageId}, Field '${notionPropName}': Found Target WF Item IDs:`, targetWebflowItemIds);
-
                         // 2. Map Webflow Item IDs to Notion Page IDs using the pre-generated map
                         const targetNotionPageIds = targetWebflowItemIds
                             .map(wfId => webflowItemToNotionPageMap.get(wfId)) // Lookup each ID
                             .filter(Boolean); // Remove any nulls/undefined (if lookup failed)
-                        console.log(`[Debug Relations] Page ${notionPageId}, Field '${notionPropName}': Mapped Notion Page IDs:`, targetNotionPageIds);
 
                         // 3. Prepare the Notion relation update payload
                         propertiesToUpdate[notionPropName] = {
@@ -224,7 +218,7 @@ export async function syncReferenceAndOptionValues(userId, createdDatabasesInfo,
             // Loop through Webflow fields schema for this collection
             for (const wfField of webflowFields) {
                 // ADDED: Log the field being processed and its type
-                console.log(`[Debug Field Loop - Options] Page ${notionPageId}, Processing WF Field: '${wfField.displayName}', Type: '${wfField.type}'`);
+                // REMOVED: console.log(`[Debug Field Loop - Options] Page ${notionPageId}, Processing WF Field: '${wfField.displayName}', Type: '${wfField.type}'`);
 
                 const notionPropName = wfField.displayName;
                 const wfFieldSlug = wfField.slug;

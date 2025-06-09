@@ -14,7 +14,7 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
-      '/auth': {
+      '/api/webflow/auth': {
         target: 'https://backend.syncsched.com',
         changeOrigin: true,
         secure: false

@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { createClient } from '@/lib/supabase/SupabaseClient';
+import supabase from '@/lib/supabase/SupabaseClient';
 import axiosInstance from '@/lib/axiosInstance';
 
 function WebflowOAuthRedirect() {
@@ -8,11 +8,15 @@ function WebflowOAuthRedirect() {
   const location = useLocation();
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const processingRef = useRef(false);
 
   useEffect(() => {
-    const supabase = createClient();
-
     const handleRedirect = async () => {
+      if (processingRef.current) {
+        return;
+      }
+      processingRef.current = true;
+
       const params = new URLSearchParams(location.search);
       const code = params.get('code');
       const state = params.get('state');
@@ -22,7 +26,7 @@ function WebflowOAuthRedirect() {
         console.error('Webflow OAuth Error:', errorParam);
         setError(`Webflow connection failed: ${errorParam}`);
         setLoading(false);
-        navigate('/dashboard?webflow_auth=error&message=Webflow_connection_failed');
+        navigate('/dashboard/notion-to-blogs?webflow_auth=error&message=Webflow_connection_failed');
         return;
       }
 
@@ -30,7 +34,7 @@ function WebflowOAuthRedirect() {
         console.error('Missing code or state in Webflow redirect');
         setError('Required parameters (code or state) missing from Webflow.');
         setLoading(false);
-        navigate('/dashboard?webflow_auth=error&message=Missing_required_parameters');
+        navigate('/dashboard/notion-to-blogs?webflow_auth=error&message=Missing_required_parameters');
         return;
       }
 
@@ -45,22 +49,19 @@ function WebflowOAuthRedirect() {
       }
 
       try {
-        console.log('Sending Webflow code to backend via Axios...');
-        const response = await axiosInstance.post('/api/webflow/exchange-code', { code, state });
+        const response = await axiosInstance.post('/api/webflow/complete-auth', { code, state });
 
         const result = response.data;
-        console.log('Backend response (Axios):', result);
 
-        if (result.status === 'success') {
-          console.log('Webflow connection successful');
-          navigate('/dashboard?webflow_auth=success&message=Webflow_connected_successfully');
+        if (result.status === 'success' || (result.message && result.message.includes('completed successfully'))) {
+          navigate('/dashboard/notion-to-blogs?webflow_auth=success&message=Webflow_connected_successfully');
         } else {
           throw new Error(result.message || 'Backend failed to process Webflow token.');
         }
       } catch (err) {
         console.error('Error sending Webflow code to backend (Axios catch):', err.response?.data || err.message);
         setError(err.response?.data?.message || err.message || 'Failed to connect Webflow account.');
-        navigate('/dashboard?webflow_auth=error&message=Failed_to_connect_Webflow_account');
+        navigate('/dashboard/notion-to-blogs?webflow_auth=error&message=Failed_to_connect_Webflow_account');
       } finally {
         setLoading(false);
       }

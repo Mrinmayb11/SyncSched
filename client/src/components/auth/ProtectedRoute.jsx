@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/supabaseClient'
+import supabase from '@/lib/supabase/SupabaseClient'
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 
@@ -15,7 +15,7 @@ export default function ProtectedRoute({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const supabase = createClient();
+
     
     // Check for existing session
     const checkSession = async () => {
@@ -23,10 +23,8 @@ export default function ProtectedRoute({ children }) {
         const { data: { user: currentUser }, error } = await supabase.auth.getUser();
         
         if (error || !currentUser) {
-          console.log('No authenticated user found, redirecting to login');
           navigate('/login', { replace: true });
         } else {
-          console.log('Authenticated user found');
           setUser(currentUser);
         }
       } catch (error) {

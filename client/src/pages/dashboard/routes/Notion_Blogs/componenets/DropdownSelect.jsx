@@ -1,25 +1,78 @@
 import React, { useState, useEffect } from "react";
-import { data } from "react-router-dom";
 
 export function SelectOption({
   options = [],
   CustomText = "",
   multiSelect = false,
   disabled = false,
+  storageKey = null, // Added storageKey to props destructuring
 }) {
   const [open, setOpen] = useState(false);
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(""); // For single select
+  const [values, setValues] = useState([]); // For multi-select, changed from setvalues to setValues
   const [selectedIcon, setSelectedIcon] = useState();
-  const [values, setvalues] = useState([]);
-  const [connectCollection, setConnectCollection] = useState([]);
 
-  // Debug options passed to component
-  console.log("SelectOption received options:", options);
-
-  // Make sure options is an array
+  // Ensure options is an array
   const validOptions = Array.isArray(options) ? options : [];
-  console.log("validOptions after array check:", validOptions);
   
+  // Effect to load initial selections from localStorage
+  useEffect(() => {
+    if (storageKey) {
+      try {
+        const storedValueString = localStorage.getItem(storageKey);
+        if (storedValueString) {
+          const storedValue = JSON.parse(storedValueString);
+          if (multiSelect && Array.isArray(storedValue)) {
+            // Expecting an array of full option objects for multi-select
+            // We need to extract just the 'value' part for the 'values' state
+            const storedOptionValues = storedValue.map(opt => opt.value);
+            setValues(storedOptionValues);
+          } else if (!multiSelect && storedValue && typeof storedValue.value !== 'undefined') {
+            // Expecting a single option object for single-select
+            setValue(storedValue.value);
+            if (storedValue.icon) setSelectedIcon(storedValue.icon);
+          }
+        }
+      } catch (error) {
+        console.error(`Error loading initial selections for ${storageKey} from localStorage:`, error);
+      }
+    }
+  }, [storageKey, multiSelect]); 
+
+
+  useEffect(() => {
+    if (storageKey) {
+      try {
+        if (multiSelect) {
+
+          if (validOptions.length > 0 && values.length > 0) {
+            const fullSelectedOptions = validOptions.filter(option => values.includes(option.value));
+
+            if (fullSelectedOptions.length === values.length || values.every(v => validOptions.some(opt => opt.value === v))){
+                localStorage.setItem(storageKey, JSON.stringify(fullSelectedOptions));
+            }
+          } else if (values.length === 0) {
+            localStorage.removeItem(storageKey);
+          }
+        } else {
+          // Single-select logic
+          if (validOptions.length > 0 && value) {
+            const fullSelectedOption = validOptions.find(option => option.value === value);
+            if (fullSelectedOption) { 
+              localStorage.setItem(storageKey, JSON.stringify(fullSelectedOption));
+            }
+            // If value exists but not in validOptions, do not save (prevents writing stale data)
+          } else if (value === "") { 
+            localStorage.removeItem(storageKey);
+          }
+          // If validOptions is empty but value has an item, we don't save.
+        }
+      } catch (error) {
+        console.error(`Error saving selections for ${storageKey} to localStorage:`, error);
+      }
+    }
+  }, [value, values, storageKey, multiSelect, validOptions]);
+
   const selectedOption = validOptions.find((option) => option.value === value);
   const selectedOptions = validOptions.filter((option) =>
     values.includes(option.value)
@@ -31,10 +84,12 @@ export function SelectOption({
 
   // Update selectedIcon when selectedOption changes
   useEffect(() => {
-    if (selectedOption && selectedOption.icon) {
+    if (!multiSelect && selectedOption && selectedOption.icon) {
       setSelectedIcon(selectedOption.icon);
+    } else if (!multiSelect && !selectedOption) {
+      setSelectedIcon(undefined); // Clear icon if no option is selected
     }
-  }, [selectedOption]);
+  }, [selectedOption, multiSelect]);
 
   // For connect button logic
   const connectOption = multiSelect
@@ -42,7 +97,7 @@ export function SelectOption({
     : selectedOption || null;
 
   const handleRemoveItem = (optionValue) => {
-    setvalues(values.filter(val => val !== optionValue));
+    setValues(values.filter(val => val !== optionValue));
   };
 
   return (
@@ -57,9 +112,9 @@ export function SelectOption({
           <div className="max-w-40">
             {selectedOptions.length > 0 
               ? selectedOptions.map((option) => (
-                  <div key={option.value} className="bg-gray-100 gap-5 rounded-md mt-2 w-fit p-1">
-                    {option.icon && <img src={option.icon} alt="" className="w-4 h-4 mr-1" />}
-                    {option.label}
+                  <div key={option.value} className="bg-gray-100 gap-1 flex items-center rounded-md mt-2 w-fit p-1 text-xs">
+                    {option.icon && <img src={option.icon} alt="" className="w-3 h-3 mr-1" />}
+                    <span>{option.label}</span>
                   </div>
                 ))
               : "Select CMS..."}
@@ -113,8 +168,8 @@ export function SelectOption({
                       if (values.includes(option.value)) {
                         handleRemoveItem(option.value);
                       } else {
-                        setvalues((prevValue) => [
-                          ...new Set([...prevValue, option.value]),
+                        setValues((prevSelectedValues) => [
+                          ...new Set([...prevSelectedValues, option.value]),
                         ]);
                       }
                     } else {
@@ -148,7 +203,7 @@ export function SelectOption({
               ))}
               {multiSelect && (
                 <button
-                  className="w-full px-2 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 font-medium"
+                  className="w-full mt-1 px-2 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 font-medium border-t"
                   onClick={() => {
                     setOpen(false);
                   }}
@@ -160,39 +215,19 @@ export function SelectOption({
           )}
         </div>
       )}
-
-      {/* Connect button - only shows if a platform is selected */} 
       {!open && connectOption && (
         <div>
           <a
             onClick={() => {
-              if (multiSelect) {
-                 //Filter ConnectedCollections from localstorage
-                const Collections = JSON.parse(localStorage.getItem("webflowCollections"));
-                console.log("Collections from localStorage:", Collections);
-                console.log("Selected options:", selectedOptions);
-                
-                // This comparison won't work, fixing it
-                const savedCollections = selectedOptions.map(option => ({
-                  id: option.value,
-                  name: option.label
-                }));
-                console.log("Saving to localStorage:", savedCollections);
-                localStorage.setItem("selectedCollectionsForNotion", JSON.stringify(savedCollections));
-
-              } else {
-                localStorage.setItem("platform", selectedOption.label);
+              if (!multiSelect && selectedOption) {
+                 localStorage.setItem("platform", selectedOption.label);
               }
             }}
-            href={multiSelect ? connectOption.href : `${selectedOption.href}?platform=${selectedOption.label}`}
-            className="flex gap-2 bg-gray-900 hover:bg-gray-950 text-white text-sm w-fit p-2"
+            href={multiSelect && connectOption ? connectOption.href : selectedOption ? `${selectedOption.href}?platform=${selectedOption.label}` : '#'}
+            className="flex gap-2 bg-gray-900 hover:bg-gray-950 text-white text-sm w-fit p-2 mt-2 rounded"
           >
-            {multiSelect ? (
-              connectOption.icon && <img src={connectOption.icon} alt="" className="w-4 h-4 mr-2" />
-            ) : (
-              selectedOption.icon && <img src={selectedOption.icon} alt="" className="w-4 h-4 mr-2" />
-            )}
-            <button>Connect {CustomText}</button>
+            {connectOption?.icon && <img src={connectOption.icon} alt="" className="w-4 h-4" />}
+            <button type="button">Connect {CustomText}</button>
           </a>
         </div>
       )}

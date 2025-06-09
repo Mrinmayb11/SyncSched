@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/supabaseClient'
+import supabase from '@/lib/supabase/SupabaseClient'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -32,7 +32,6 @@ export default function Login() {
     const email = formData.get('email')
     const password = formData.get('password')
 
-    const supabase = createClient()
     
     try {
       const { data, error } = await supabase.auth.signInWithPassword({

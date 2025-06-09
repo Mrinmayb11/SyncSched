@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createClient } from '@/lib/supabase/SupabaseClient';
+import supabase from '@/lib/supabase/SupabaseClient';
 
 /**
  * Component that redirects authenticated users away from auth pages
@@ -13,7 +13,7 @@ export default function AuthRedirect({ redirectTo = '/dashboard' }) {
   
   useEffect(() => {
     const checkAuthAndRedirect = async () => {
-      const supabase = createClient();
+     
       const { data } = await supabase.auth.getSession();
       
       if (data?.session) {

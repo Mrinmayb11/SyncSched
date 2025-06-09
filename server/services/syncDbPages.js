@@ -234,37 +234,44 @@ function mapWebflowItemToNotionProperties(webflowItemFieldData, notionDbProperti
         }
     }
 
-    // --- Status Mapping & Scheduled Time Logic (using webflowItem directly) --- 
+    // --- Status Mapping Logic --- 
     const isDraft = webflowItem?.isDraft;
     const publishedOn = webflowItem?.lastPublished;
     const updatedOn = webflowItem?.lastUpdated;
-    let notionStatus = "Published"; // Default assumption
+    let notionStatus; // REPLACEMENT: Determine explicitly below, remove default
 
     // Use webflowItem.id for logging
     const wfItemIdForLog = webflowItem?.id || 'unknown'; 
-    console.log(`[Debug Status] WF Item ID: ${wfItemIdForLog}, isDraft: ${isDraft}, lastPublished: ${publishedOn}, lastUpdated: ${updatedOn}`);
+    console.log(`[Debug Status Start] WF Item ID: ${wfItemIdForLog}, isDraft: ${isDraft}, lastPublished: ${publishedOn}, lastUpdated: ${updatedOn}`); // REPLACEMENT: Added Start log
 
+    // REPLACEMENT BLOCK START: Explicit if/else structure
     if (isDraft === true) {
-        notionStatus = "Draft";
-    // Check for "Draft Changes": Not a draft, last updated AFTER last published
-    } else if (publishedOn && updatedOn && new Date(updatedOn) > new Date(publishedOn)) { 
-        notionStatus = "Draft Changes";
-    // Check for "Scheduled": Not a draft, published_on is in the future
-    } else if (publishedOn) { 
-        try {
-            const publishDate = new Date(publishedOn);
-            console.log(`[Debug Status] WF Item ID: ${wfItemIdForLog}, Parsed publishDate: ${publishDate.toISOString()}, Is future? ${publishDate > new Date()}`);
-            if (!isNaN(publishDate.getTime()) && publishDate > new Date()) {
-                notionStatus = "Scheduled";
+        if (publishedOn == null) {
+            notionStatus = "Draft"; // Case 1: Pure Draft
+        } else {
+            notionStatus = "Draft Changes"; // Case 2a: Draft, but was published before
+        }
+    } else { // isDraft is false
+        if (publishedOn === null) {
+            // Unusual state: Not a draft, but never published. Treat as Published.
+            notionStatus = "Published"; 
+        } else { // isDraft: false, publishedOn: not null
+            // Check if updated since publishing
+            if (updatedOn && new Date(updatedOn) > new Date(publishedOn)) {
+                // PREVIOUSLY: notionStatus = "Draft Changes"; // Case 2b: Published, but updated since
+                // UPDATED: Map Queued to Publish / Updated since published to "Published"
+                notionStatus = "Queued to Publish"; 
+            } else {
+                // PREVIOUSLY: notionStatus = "Published"; // Case 3: Published, and no newer updates
+                // UPDATED: Map Queued to Publish / Updated since published to "Published"
+                notionStatus = "Published"; 
             }
-            // Otherwise, it remains "Published"
-        } catch (e) {
-            console.warn(`Could not parse published_on date: ${publishedOn}`);
         }
     }
-    // Default is "Published" if none of the above conditions are met
+    // REPLACEMENT BLOCK END
     
-    console.log(`[Debug Status] WF Item ID: ${wfItemIdForLog}, Determined Notion Status: ${notionStatus}`);
+    // REPLACEMENT: Add final check before assignment
+    console.log(`[Debug Status FINAL] WF Item ID: ${wfItemIdForLog}, Final Determined Status Before Assignment: ${notionStatus}`);
 
     // Map to Notion "Status" property
     if (notionDbPropertiesSchema["Status"]?.type === 'select') {
@@ -281,21 +288,7 @@ function mapWebflowItemToNotionProperties(webflowItemFieldData, notionDbProperti
          console.warn(`[Status Mapping] Notion property "Status" is missing or not a Select type for DB related to WF item ${wfItemIdForLog}.`);
     }
 
-    // If scheduled, populate the "Scheduled Publish Time" property
-    if (notionStatus === "Scheduled" && notionDbPropertiesSchema["Scheduled Publish Time"]?.type === 'date' && publishedOn) {
-        try {
-            const scheduleDate = new Date(publishedOn);
-            if (!isNaN(scheduleDate.getTime())) {
-                notionProperties["Scheduled Publish Time"] = { date: { start: scheduleDate.toISOString() } };
-            }
-        } catch(e) {
-            console.warn(`Could not parse scheduled date for "Scheduled Publish Time": ${publishedOn}`);
-        }
-    } // Clear the scheduled date if status is no longer scheduled
-    else if (notionDbPropertiesSchema["Scheduled Publish Time"]?.type === 'date') {
-         notionProperties["Scheduled Publish Time"] = { date: null };
-    }
-    // --- END: Status Mapping & Scheduled Time Logic ---
+    // --- END: Status Mapping Logic ---
 
     return notionProperties;
 }
@@ -482,7 +475,7 @@ export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo
 
             // ADDED: Skip archived items
             if (item.isArchived) {
-                console.log(`[Sync Skip] Skipping archived Webflow item ${webflowItemId}`);
+                // console.log(`[Sync Skip] Skipping archived Webflow item ${webflowItemId}`); <-- REMOVE
                 return; // Don't process this item further
             }
 
@@ -509,7 +502,7 @@ export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo
                 // 2. Create Notion Page
                         const newPage = await notion.pages.create({
                             parent: { database_id: notionDbId },
-                            properties: notionPageProperties,
+                            properties: notionPageProperties,       
                             children: notionPageBlocks.length > 0 ? notionPageBlocks : undefined,
                         });
                 const notionPageId = newPage.id;

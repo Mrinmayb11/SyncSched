@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/supabaseClient'
+import supabase from '@/lib/supabase/SupabaseClient'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -34,7 +34,7 @@ export default function ForgotPassword() {
     const email = formData.get('email')
     const origin = window.location.origin
 
-    const supabase = createClient()
+
 
     try {
       // Send the actual reset password email

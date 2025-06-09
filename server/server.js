@@ -32,7 +32,7 @@ app.use('/api/protected', protectedRoutes);
 app.use(notionAuthRouter);
 
 // Webflow Auth2.0
-app.get('/auth', async (req, res) => {
+app.get('/api/webflow/auth', async (req, res) => {
   const platform = req.query.platform;
   
   // Log and validate platform parameter
@@ -61,98 +61,108 @@ async function getAccessToken(code) {
   return tokenResponse;
 }
 
-
-
-
-
+// Notion OAuth2.0 initiation
+app.get('/api/notion/auth', async (req, res) => {
+  try {
+    const clientId = process.env.NOTION_CLIENT_ID;
+    const redirectUri = process.env.NOTION_FRONTEND_REDIRECT_URI;
+    const oauthUrl = process.env.NOTION_AUTH_URL;
+    
+    if (!clientId || !redirectUri || !oauthUrl) {
+      console.error('Missing Notion OAuth environment variables');
+      return res.status(500).send('Server configuration error');
+    }
+    
+    console.log('Redirecting to Notion OAuth:', oauthUrl);
+    res.redirect(oauthUrl);
+  } catch (error) {
+    console.error('Error generating Notion auth URL:', error);
+    res.status(500).send('Error initiating Notion authentication');
+  }
+});
 
 // Renamed and changed to POST. Handles the final step after frontend redirect.
 app.post('/api/webflow/complete-auth', requireAuth, async (req, res) => {
+  console.log('[Webflow Auth] Received request to /api/webflow/complete-auth');
+  let step = 'start';
   try {
     // Get userId from the authenticated request (verified by requireAuth)
+    step = 'get_user_id';
     const userId = req.user?.id;
+
     if (!userId) {
-      console.error('User ID not found after authentication in /api/webflow/complete-auth');
+      console.error('[Webflow Auth] User ID missing after auth.');
       return res.status(401).send('Authentication failed or user ID missing.');
     }
+    console.log(`[Webflow Auth] Authenticated user ID: ${userId}`);
 
     // Extract code and state from the request BODY (sent by frontend)
+    step = 'extract_body';
     const { code, state } = req.body;
 
     if (!code || !state) {
-      console.error('Missing code or state in request body');
+      console.error('[Webflow Auth] Missing code or state parameter from frontend.');
       return res.status(400).send('Missing code or state parameter from frontend.');
     }
 
     // Extract the platform from state
+    step = 'parse_state';
     let stateValue, platform;
     try {
       const stateParts = state.split('|');
       stateValue = stateParts[0];
       platform = stateParts[1] || 'unknown';
     } catch (error) {
-      console.error('Error parsing state parameter:', error);
+      console.error('[Webflow Auth] Error parsing state:', error);
       return res.status(400).send('Invalid state format');
     }
 
+    step = 'validate_state';
     if (stateValue !== process.env.STATE) {
-      console.error('State validation failed', { 
-        expected: process.env.STATE, 
-        received: stateValue 
-      });
+      console.error('[Webflow Auth] State validation failed. Received state does not match expected state.');
       return res.status(400).send('State does not match. Authorization failed.');
     }
 
     // Pass the FRONTEND redirect URI here as it must match the initial request
+    step = 'get_access_token';
     const accessToken = await getAccessToken(code);
-    console.log('Value of accessToken immediately after await:', accessToken); // DEBUG LOG
+    console.log('[Webflow Auth] Successfully received access token from Webflow.');
+    console.log('[Webflow Auth] Access token structure:', JSON.stringify(accessToken, null, 2));
     
     if (!accessToken) { 
-      console.error('Invalid token response from Webflow helper'); 
+      console.error('[Webflow Auth] Failed to get access token from Webflow');
       return res.status(500).send('Failed to get valid access token from Webflow');
     }
 
     // Save token and platform
-    console.log(`Attempting to save Webflow token for user ${userId}...`);
+    step = 'save_token_db';
     await W_Auth_db(userId, accessToken, platform);
-    console.log(`Successfully saved Webflow token for user ${userId}.`);
 
     // Fetch and save collections
-    console.log(`Attempting to fetch/save collections for user ${userId}...`);
-    try {
-      console.log(`Calling getCollections for user ${userId}...`);
-      const collectionsResult = await getCollections(userId);
-      console.log(`Received collections result for user ${userId}:`, JSON.stringify(collectionsResult));
-
-      const collections = collectionsResult?.collections;
-
-      if (collections && Array.isArray(collections) && collections.length > 0) {
-        console.log(`Found ${collections.length} collections. Attempting to save...`);
-        await W_Collection_db(userId, collections);
-        console.log(`Collections saved for user ${userId} after Webflow auth.`);
-      } else {
-        console.log(`No new collections found or collections format invalid for user ${userId}. Raw result:`, JSON.stringify(collectionsResult));
-      }
-    } catch (collectionError) {
-      console.error(`Error fetching/saving collections for user ${userId}:`, collectionError);
+    step = 'fetch_save_collections';
+    
+    // Initialize the client with the token inside an object
+    const webflow = new WebflowClient({ token: accessToken });
+    const sites = await webflow.sites.list();
+    
+    // Assuming we're working with the first site for now
+    if (sites.length > 0) {
+        const siteId = sites[0].id;
+        const collectionsResult = await webflow.collections.list(siteId);
+        
+        await W_Collection_db(userId, collectionsResult);
+    } else {
+        console.log('[Webflow Auth] No sites found for this user, skipping collection sync.');
     }
 
-    // Success response
-    console.log(`Completing request successfully for user ${userId}.`);
-    res.status(200).json({ message: 'Webflow authentication completed successfully.' });
+    res.status(200).json({ status: 'success', message: 'Webflow authentication completed successfully.' });
 
   } catch (error) {
-    console.error('ERROR in /api/webflow/complete-auth:', error);
-
-    if (error.response && error.response.data) {
-      console.error('Webflow API Error details:', error.response.data);
-      return res.status(500).json({ 
-        message: 'Error communicating with Webflow API', 
-        details: error.response.data 
-      });
-    } else {
-      return res.status(500).json({ message: 'Internal Server Error during Webflow auth completion.' });
-    }
+    console.error(`[Webflow Auth] Error at step '${step}':`, error.response?.data || error.message);
+    const displayMessage = (error.message || '').includes('W_Auth_db')
+      ? 'Failed to save Webflow connection details.'
+      : 'Internal Server Error during Webflow auth completion.';
+    return res.status(500).json({ message: displayMessage, error: error.message });
   }
 });
 
@@ -184,7 +194,7 @@ app.get('/api/webflow/collections', requireAuth, async (req, res) => {
 });
 
 
-app.post('/api/sync/start', requireAuth, async (req, res) => {
+app.post('/api/sync/start-blog-sync', requireAuth, async (req, res) => {
  
   const userId = req.user?.id;
   if (!userId) {
@@ -192,20 +202,17 @@ app.post('/api/sync/start', requireAuth, async (req, res) => {
     return res.status(401).json({ error: 'Authentication failed or user ID missing.' });
   }
 
-  console.log(`Received request to start sync process for user ${userId}...`);
   try {
     // Call the sync orchestrator function, PASSING userId
     const syncResult = await runFullSyncProcess(userId);
 
     if (syncResult.success) {
-      console.log("Sync process completed successfully (from API endpoint).");
       res.status(200).json({ 
         status: 'success', 
         message: syncResult.message || 'Sync completed successfully.',
         details: syncResult // Include any details returned by the sync function
       });
     } else {
-      console.error("Sync process failed (from API endpoint):", syncResult.message);
       res.status(500).json({ 
         status: 'error', 
         message: syncResult.message || 'Sync failed.', 
@@ -213,7 +220,6 @@ app.post('/api/sync/start', requireAuth, async (req, res) => {
       });
     }
   } catch (error) {
-    console.error("Error triggering sync process from API endpoint:", error);
     res.status(500).json({ 
       status: 'error', 
       message: 'Failed to start sync process.', 

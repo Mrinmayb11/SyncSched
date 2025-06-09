@@ -97,9 +97,6 @@ function mapingFields(webflowFields) {
     // Add the Webflow Item ID property from the start
     propertiesSchema["Webflow Item ID"] = { rich_text: {} };
 
-    // ADDED: Add Scheduled Publish Time property (Date type)
-    propertiesSchema["Scheduled Publish Time"] = { date: {} };
-
     webflowFields.forEach(field => {
         const fieldType = field.type;
         const fieldName = field.displayName;

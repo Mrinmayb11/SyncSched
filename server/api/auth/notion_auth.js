@@ -3,8 +3,7 @@ import express from 'express';
 import axios from 'axios';
 import 'dotenv/config';
 import { save_access_token as saveNotionAuth_info } from '../../database/save-notionInfo.js';
-import { requireAuth } from '../../config/supabase.js'; // Import requireAuth
-// Import the default export (runFullSyncProcess) from sync2notion.js
+import { requireAuth } from '../../config/supabase.js'; 
 
 
 const router = express.Router();
@@ -42,7 +41,6 @@ router.post('/api/notion/complete-auth', requireAuth, async (req, res) => {
           {
             grant_type: 'authorization_code',
             code: code,
-            // Use the intended FRONTEND redirect URI environment variable
             redirect_uri: process.env.NOTION_FRONTEND_REDIRECT_URI
           },
           {
@@ -78,5 +76,5 @@ router.post('/api/notion/complete-auth', requireAuth, async (req, res) => {
       }
 });
 
-export default router; // Export the router
+export default router; 
 

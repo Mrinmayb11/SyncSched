@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/supabaseClient'
+import supabase from '@/lib/supabase/SupabaseClient'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -31,7 +31,7 @@ export default function UpdatePassword() {
       return
     }
 
-    const supabase = createClient()
+
 
     try {
       const { error } = await supabase.auth.updateUser({ password: password })
