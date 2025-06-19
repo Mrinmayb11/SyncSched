@@ -14,6 +14,7 @@ import { loader as authConfirmLoader } from "./pages/login_signup/routes/auth.co
 import  AuthError  from "./pages/login_signup/routes/auth.error";
 import WebflowOAuthRedirect from './auth/WebflowOAuthRedirect';
 import NotionOAuthRedirect from './auth/NotionOAuthRedirect';
+import SyncSetupWizard from './pages/dashboard/routes/Notion_Blogs/SyncSetupWizard';
 
 
 
@@ -39,15 +40,17 @@ export const router = createBrowserRouter([
       {
         path: "notion-to-blogs",
         element: <NotionToBlogsPage />,
+        children: [
+          {
+            path: "new",
+            element: <SyncSetupWizard />
+          }
+        ]
       },
       {
         path: "notion-to-socials",
         element: <NotionToSocialsPage />,
       },
-      {
-        index: true,
-        element: <div>Welcome to your Dashboard! Select an option from the sidebar.</div>
-      }
     ]
   },
   {

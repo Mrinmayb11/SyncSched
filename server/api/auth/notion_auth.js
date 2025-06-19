@@ -2,7 +2,7 @@
 import express from 'express'; 
 import axios from 'axios';
 import 'dotenv/config';
-import { save_access_token as saveNotionAuth_info } from '../../database/save-notionInfo.js';
+import { save_notion_access_token } from '../../database/save-notionInfo.js';
 import { requireAuth } from '../../config/supabase.js'; 
 
 
@@ -57,7 +57,7 @@ router.post('/api/notion/complete-auth', requireAuth, async (req, res) => {
   
         // 2. Save Notion Token to Supabase, passing userId
         console.log('Attempting to save Notion token to database...');
-        await saveNotionAuth_info(userId, notionOAuthData);
+        await save_notion_access_token(userId, notionOAuthData);
         console.log('Successfully saved Notion token to database.');
 
         // Send success response back to the frontend
@@ -69,7 +69,7 @@ router.post('/api/notion/complete-auth', requireAuth, async (req, res) => {
         console.error('Error during Notion token exchange or saving:', errorMessage, error.stack);
         
         // Send appropriate error response to frontend
-        const displayMessage = error.message.includes('save_access_token') 
+        const displayMessage = error.message.includes('save_notion_access_token') 
             ? 'Failed to save Notion connection details.'
             : 'Failed to connect to Notion.';
         res.status(500).json({ message: displayMessage, error: errorMessage });

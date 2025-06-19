@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Card,
@@ -27,7 +27,7 @@ const AVAILABLE_PLATFORMS = [
     id: "wordpress",
     name: "WordPress (Coming Soon)",
     description: "Sync content from your WordPress site.",
-    authUrl: null,
+    authUrl: "https://www.example.com/",
     statusQueryParam: "wp_auth",
     disabled: true,
   },
@@ -43,6 +43,7 @@ export default function PlatformSelectionStep({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const hasAdvancedRef = useRef(false);
 
   const [connectionAttemptMessage, setConnectionAttemptMessage] = useState('');
   const [connectionAttemptStatus, setConnectionAttemptStatus] = useState(null);
@@ -70,6 +71,7 @@ export default function PlatformSelectionStep({
       if (params.has(platform.statusQueryParam)) {
         const status = params.get(platform.statusQueryParam);
         const msg = params.get('message');
+        const webflowAuthId = params.get('webflowAuthId'); // Extract webflowAuthId from URL
         
         const isSuccess = status === 'success';
         setConnectionAttemptStatus(isSuccess ? 'success' : 'error');
@@ -78,20 +80,30 @@ export default function PlatformSelectionStep({
         // Auto-select the platform if OAuth was successful and no platform is currently selected
         if (isSuccess && !selectedPlatform) {
           onPlatformSelect(platform.id);
+          localStorage.setItem('syncsched_selected_platform', platform.id);
+          localStorage.setItem('syncsched_platform_connected', 'true');
         }
         
         if (onConnectionStatusChange) {
-          onConnectionStatusChange(platform.id, isSuccess);
+          // Pass the webflowAuthId in the data object
+          const responseData = { webflowAuthId };
+          onConnectionStatusChange(platform.id, isSuccess, responseData);
         }
+
+        // Clean up URL parameters immediately
+        navigate(location.pathname, { replace: true });
 
         // Automatically advance to next step if connection was successful
-        if (isSuccess && onNext) {
+        if (isSuccess && onNext && !hasAdvancedRef.current) {
+          hasAdvancedRef.current = true;
+          console.log('PlatformSelectionStep - Auto-advancing to Collections step in 3 seconds...');
           setTimeout(() => {
-            onNext();
-          }, 2000); // Wait 2 seconds to show success message before advancing
+            if (selectedPlatform || platform.id) {
+              console.log('PlatformSelectionStep - Calling onNext() to go to Collections');
+              onNext();
+            }
+          }, 3000);
         }
-
-        navigate(location.pathname, { replace: true });
       }
     });
   }, [location.search, navigate, onConnectionStatusChange, onNext, selectedPlatform, onPlatformSelect]);
@@ -129,7 +141,7 @@ export default function PlatformSelectionStep({
       </Card>
     );
   }
-
+  
   return (
     <Card>
       <CardHeader>

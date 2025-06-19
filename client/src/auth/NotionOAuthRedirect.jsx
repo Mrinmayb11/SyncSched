@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import supabase from '@/lib/supabase/SupabaseClient';
-import axiosInstance from '@/lib/axiosInstance';
+import supabase from '../lib/supabase/SupabaseClient.js';
+import axiosInstance from '../lib/axiosInstance.js';
 
 function NotionOAuthRedirect() {
   const navigate = useNavigate();
@@ -25,7 +25,7 @@ function NotionOAuthRedirect() {
         console.error('Notion OAuth Error:', errorParam);
         setError(`Notion connection failed: ${errorParam}`);
         setLoading(false);
-        navigate('/dashboard/notion-to-blogs?notion_auth=error&message=Notion_connection_failed');
+        navigate('/dashboard/notion-to-blogs/new?notion_auth=error&message=Notion_connection_failed');
         return;
       }
 
@@ -33,7 +33,7 @@ function NotionOAuthRedirect() {
         console.error('No code found in Notion redirect');
         setError('No authorization code received from Notion.');
         setLoading(false);
-        navigate('/dashboard/notion-to-blogs?notion_auth=error&message=No_authorization_code_received');
+        navigate('/dashboard/notion-to-blogs/new?notion_auth=error&message=No_authorization_code_received');
         return;
       }
 
@@ -53,14 +53,14 @@ function NotionOAuthRedirect() {
 
         // Check for success: either result.status === 'success' OR result.message indicates success
         if (result.status === 'success' || (result.message && result.message.includes('connection successful'))) {
-          navigate('/dashboard/notion-to-blogs?notion_auth=success&message=Notion_connected_successfully');
+          navigate('/dashboard/notion-to-blogs/new?notion_auth=success&message=Notion_connected_successfully');
         } else {
           throw new Error(result.message || 'Backend failed to process Notion token.');
         }
       } catch (err) {
         console.error('Notion OAuth error:', err.response?.data || err.message);
         setError(err.response?.data?.message || err.message || 'Failed to connect Notion account.');
-        navigate('/dashboard/notion-to-blogs?notion_auth=error&message=Failed_to_connect_Notion_account');
+        navigate('/dashboard/notion-to-blogs/new?notion_auth=error&message=Failed_to_connect_Notion_account');
       } finally {
         setLoading(false);
         // processingRef.current remains true to prevent re-runs for the same code.

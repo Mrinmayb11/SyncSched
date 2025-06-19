@@ -4,6 +4,7 @@ import supabase from './supabase/SupabaseClient.js'; // Adjust path if needed
 // Create a reusable Axios instance
 const axiosInstance = axios.create({
   // baseURL handled by Vite proxy
+  timeout: 60000, // Default 60 seconds timeout (can be overridden per request)
 });
 
 // Request Interceptor

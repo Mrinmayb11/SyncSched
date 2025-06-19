@@ -1,132 +1,117 @@
 import { supabase } from '../config/supabase.js'; // Import the initialized Supabase client
- 
-export async function W_Auth_db(userId, token, platform) {
+import 'dotenv/config';
+
+export async function W_Auth_db(userId, accessToken, platform, siteInfo) {
   if (!supabase) {
     console.error("Supabase client not initialized. Cannot save Webflow auth.");
     return null;
   }
   if (!userId) {
-    console.error("User ID is required to save Webflow auth info.");
+    throw new Error('User ID is required to save Webflow auth info.');
+  }
+  if (!accessToken) {
+    throw new Error('Access token is required to save Webflow auth info.');
+  }
+  if (!siteInfo || !siteInfo.id || !siteInfo.name) {
+    throw new Error('Site info (id and name) is required to save Webflow auth info.');
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('cms_auth_info')
+      .insert({
+        user_id: userId,
+        platform: platform || 'webflow',
+        access_token: accessToken,
+        site_id: siteInfo.id,
+        site_name: siteInfo.name,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error saving Webflow info to Supabase:', error);
+      throw error;
+    }
+
+    console.log('Successfully saved Webflow auth and site info for user:', userId);
+    return data;
+  } catch (err) {
+    console.error('An exception occurred in W_Auth_db:', err);
+    throw new Error('Failed to save Webflow authentication details in W_Auth_db.');
+  }
+}
+
+/**
+ * Retrieves all Webflow authentication records for a specific user.
+ * @param {string} userId - The ID of the authenticated Supabase user.
+ * @returns {Promise<Array<object>|null>} - An array of cms_auth_info objects.
+ */
+export async function get_all_webflow_auth(userId) {
+  if (!supabase) throw new Error("Supabase client not initialized.");
+  if (!userId) {
+    console.error("User ID is required to get Webflow auth info.");
     return null;
   }
 
   try {
-    // Upsert allows inserting or updating if a record for the user already exists
     const { data, error } = await supabase
       .from('cms_auth_info')
-      .upsert({ 
-        user_id: userId, // Link to the authenticated user
-        access_token: token, 
-        platform: platform 
-      })
-      .select('access_token, user_id') // Select the fields to return
-      .single(); // Expecting a single record back
+      .select('*')
+      .eq('user_id', userId)
+      .eq('platform', 'webflow')
+      .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Error saving Webflow auth info to Supabase:', error);
+      console.error('Error fetching Webflow auth info from Supabase:', error);
       throw error;
     }
-
-    if (!data) {
-        console.error('No data returned after saving Webflow auth info.');
-        return null;
-    }
-
-    // Return the relevant data
-    return { access_token: data.access_token, userId: data.user_id };
-
+    
+    return data;
   } catch (error) {
-    // Log the error, but the specific Supabase error is logged above
-    console.error('Exception during W_Auth_db:', error.message);
-    return null; // Indicate failure
+    console.error('Error in get_all_webflow_auth:', error.message);
+    return null;
   }
 }
 
-export async function W_Collection_db(userId, collections) {
-  if (!supabase) {
-    console.error("Supabase client not initialized. Cannot save collections.");
-    return false;
-  }
-  if (!userId) {
-    console.error("User ID is required to save collections.");
-    return false;
-  }
-  if (!Array.isArray(collections)) {
-      console.error("Collections data must be an array.");
-      return false;
-  }
-
-  try {
-    // 1. Delete existing collections for this user
-    const { error: deleteError } = await supabase
-      .from('cms_collections_info')
-      .delete()
-      .eq('user_id', userId);
-
-    if (deleteError) {
-      console.error('Error deleting old collections from Supabase:', deleteError);
-      throw deleteError;
-    }
-
-    // 2. Prepare new collection data for insertion
-    if (collections.length > 0) {
-        const collectionsToInsert = collections.map(collection => ({
-          user_id: userId,
-          collection_id: collection.id || collection._id, // Use appropriate ID field
-          collection_name: collection.displayName || collection.name // Use appropriate name field
-        }));
-    
-        // 3. Insert new collections
-        const { error: insertError } = await supabase
-          .from('cms_collections_info')
-          .insert(collectionsToInsert);
-    
-        if (insertError) {
-          console.error('Error inserting new collections into Supabase:', insertError);
-          throw insertError;
-        }
-        console.log(`Saved ${collections.length} collections for user ${userId} to Supabase.`);
-    } else {
-         console.log(`No new collections to save for user ${userId}.`);
-    }
-
-    return true; // Indicate success
-
-  } catch (error) {
-    console.error('Exception during W_Collection_db:', error.message);
-    return false; // Indicate failure
-  }
-}
-
-export async function getWebflowToken(userId) {
-
+export async function getWebflowToken(userId, authId = null) {
   if (!supabase) {
     console.error("Supabase client not initialized. Cannot get Webflow token.");
     return null;
   }
-   if (!userId) {
+  
+  if (!userId) {
     console.error("User ID is required to get Webflow token.");
     return null;
   }
 
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('cms_auth_info')
       .select('access_token')
       .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(); // Returns single object or null, doesn't throw error if not found
+      .eq('platform', 'webflow');
+
+    if (authId) {
+      // If authId is provided, get that specific auth record
+      query = query.eq('id', authId).maybeSingle();
+    } else {
+      // If no authId provided, get the most recent one for backward compatibility
+      query = query.order('created_at', { ascending: false }).limit(1).maybeSingle();
+      console.log(`No authId provided for user ${userId}, using most recent Webflow auth record`);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('Error fetching Webflow token from Supabase:', error);
       return null;
     }
 
-    return data ? data.access_token : null; // Return token or null if no record found
+    return data ? data.access_token : null;
 
   } catch (error) {
-      console.error('Exception during getWebflowToken:', error.message);
-      return null;
+    console.error('Exception during getWebflowToken:', error.message);
+    return null;
   }
 }

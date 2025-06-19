@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Card,
   CardContent,
@@ -7,106 +7,109 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox"; // Using Checkbox for multi-select list
-import { Label } from "@/components/ui/label";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import axiosInstance from '@/lib/axiosInstance'; // For making API calls
+import { Checkbox } from "@/components/ui/checkbox";
+import axiosInstance from '@/lib/axiosInstance';
+import { Loader2 } from 'lucide-react';
 
-export default function CollectionSelectionStep({ platformId, selectedCollections, onCollectionsSelect, onNext }) {
-  const [availableCollections, setAvailableCollections] = useState([]);
+export default function CollectionSelectionStep({ platformId, webflowAuthId, selectedCollections, onCollectionsSelect, onNext }) {
+  const [collections, setCollections] = useState([]);
+  const [siteInfo, setSiteInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const fetchPlatformCollections = useCallback(async () => {
-    if (!platformId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      // Fetch collections for the specific platform using the correct endpoint
-      const response = await axiosInstance.get(`/api/${platformId}/collections`);
-      
-      const collections = response.data;
-      if (Array.isArray(collections)) {
-        setAvailableCollections(collections.map(col => ({ 
-          id: col.id || col._id, // Use actual unique IDs
-          label: col.displayName || col.name,
-          // Add itemCount if available from API: itemCount: col.itemCount
-        })));
-      } else {
-        console.error("Collections data is not an array:", collections);
-        setAvailableCollections([]);
-        setError("Received invalid collection data from server.");
-      }
-    } catch (err) {
-      console.error(`Error fetching collections for ${platformId}:`, err.response?.data || err.message);
-      setError(err.response?.data?.message || err.message || 'Failed to load collections.');
-      setAvailableCollections([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [platformId]);
-
   useEffect(() => {
-    fetchPlatformCollections();
-  }, [fetchPlatformCollections]);
+    async function fetchCollections() {
+      if (!platformId || !webflowAuthId) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await axiosInstance.get('/api/webflow/collections', {
+          params: { webflowAuthId }
+        });
+        const data = response.data || {};
+        
+        console.log('Full API response:', response.data);
+        console.log('Collections from response:', data.collections);
+        console.log('Type of collections:', typeof data.collections);
+        console.log('Is collections an array?', Array.isArray(data.collections));
+        
+        const collections = data.collections || [];
+        const site = data.site || null;
+        
+        setCollections(collections);
+        setSiteInfo(site);
+        
+        console.log(`Loaded ${collections.length} collections for site: ${site?.displayName || 'Unknown'}`);
+      } catch (err) {
+        setError('Failed to load collections. Please try reconnecting the platform.');
+        console.error("Fetch collections error:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchCollections();
+  }, [platformId, webflowAuthId]);
 
   const handleCheckboxChange = (collectionId) => {
-    const newSelectedCollections = selectedCollections.includes(collectionId)
+    const newSelection = selectedCollections.includes(collectionId)
       ? selectedCollections.filter(id => id !== collectionId)
       : [...selectedCollections, collectionId];
-    onCollectionsSelect(newSelectedCollections);
+    onCollectionsSelect(newSelection);
   };
 
-  if (!platformId) {
+  const renderContent = () => {
+    if (loading) {
+      return <div className="flex items-center justify-center h-40"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
+    }
+
+    if (error) {
+      return <p className="text-red-500">{error}</p>;
+    }
+
+    if (collections.length === 0) {
+      return <p>No collections found for the connected account.</p>;
+    }
+
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Step 2: Select Collections</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p>Please connect a platform in the previous step first.</p>
-        </CardContent>
-      </Card>
+      <div className="space-y-3">
+        {siteInfo && (
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <p className="text-sm text-blue-800">
+              <strong>Webflow Site:</strong> {siteInfo.displayName || siteInfo.name}
+            </p>
+          </div>
+        )}
+        {collections.map(collection => (
+          <div key={collection.id} className="flex items-center space-x-3 p-3 border rounded-lg hover:bg-gray-50">
+            <Checkbox
+              id={collection.id}
+              checked={selectedCollections.includes(collection.id)}
+              onCheckedChange={() => handleCheckboxChange(collection.id)}
+            />
+            <label
+              htmlFor={collection.id}
+              className="flex-1 text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+            >
+              {collection.displayName || collection.name}
+            </label>
+          </div>
+        ))}
+      </div>
     );
-  }
+  };
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Step 2: Select Collections</CardTitle>
+        <CardTitle>Step 2: Select Content to Sync</CardTitle>
         <CardDescription>
-          Choose the collections from {platformId} you want to sync to Notion.
+          Choose the collections from your Webflow site you want to sync to Notion.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {loading && <p>Loading collections...</p>}
-        {error && <p className="text-red-500">Error: {error}</p>}
-        {!loading && !error && availableCollections.length === 0 && (
-          <p>No collections found for {platformId} or you may not have access.</p>
-        )}
-        {!loading && !error && availableCollections.length > 0 && (
-          <ScrollArea className="h-72 w-full rounded-md border p-4">
-            <div className="space-y-2">
-              {availableCollections.map((collection) => (
-                <div key={collection.id} className="flex items-center space-x-2">
-                  <Checkbox
-                    id={`collection-${collection.id}`}
-                    checked={selectedCollections.includes(collection.id)}
-                    onCheckedChange={() => handleCheckboxChange(collection.id)}
-                  />
-                  <Label htmlFor={`collection-${collection.id}`} className="flex-grow">
-                    {collection.label}
-                    {/* {collection.itemCount !== undefined && (
-                      <span className="text-xs text-muted-foreground ml-2">({collection.itemCount} items)</span>
-                    )} */}
-                  </Label>
-                </div>
-              ))}
-            </div>
-          </ScrollArea>
-        )}
-        <Button onClick={onNext} disabled={loading || error || selectedCollections.length === 0}>
-          {selectedCollections.length > 0 ? 'Continue Now' : 'Select Collections'}
+        {renderContent()}
+        <Button onClick={onNext} disabled={selectedCollections.length === 0 || loading}>
+          Next
         </Button>
       </CardContent>
     </Card>
