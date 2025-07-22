@@ -40,13 +40,15 @@ export default function NotionConnectionStep({ onNext, onNotionConnectionStatusC
     if (params.has(NOTION_OAUTH_DETAILS.statusQueryParam)) {
       const status = params.get(NOTION_OAUTH_DETAILS.statusQueryParam);
       const msg = params.get('message');
+      const notionAuthId = params.get('notionAuthId');
       const isSuccess = status === 'success';
       
       setConnectionStatus(status);
       setMessage(msg?.replace(/_/g, ' ') || (isSuccess ? `Notion connected successfully!` : `Notion connection failed.`));
       
       if (onNotionConnectionStatusChange) {
-        onNotionConnectionStatusChange(isSuccess);
+        const data = isSuccess ? { notionAuthId } : null;
+        onNotionConnectionStatusChange(isSuccess, data);
       }
 
       // Automatically advance to next step if connection was successful

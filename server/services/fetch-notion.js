@@ -48,39 +48,3 @@ export async function get_notion_access_token(userId) {
        return null; // Return null on exception
   }
 }
-
-// Accept token as argument
-export async function parent_page_id(notion_access_token) {
-
-    if (!notion_access_token) {
-        throw new Error("Notion access token is required for parent_page_id function.");
-    }
-
-    // Use the passed token to create the client
-    const notion = new Client({
-        auth: notion_access_token,
-    });
-
-    try {
-        const page = await notion.search({
-            filter:{
-                property:'object',
-                value:'page',
-            }
-        });
-
-        let page_id = null;
-
-        if (page && page.results && page.results.length > 0) {
-            page_id = page.results[0].id; 
-        } else {
-            // Decide how to handle this: throw error? return null? create a page?
-            // For now, returning null.
-        }
-        return page_id;
-
-    } catch (error) {
-        console.error('Error searching for Notion parent page:', error);
-        throw error;
-    }
-}

@@ -53,15 +53,20 @@ function WebflowOAuthRedirect() {
 
         const result = response.data;
 
-        if (result.status === 'success' || (result.message && result.message.includes('completed successfully'))) {
-          const webflowAuthId = result.webflowAuthId;
-          const redirectUrl = webflowAuthId 
-            ? `/dashboard/notion-to-blogs/new?webflow_auth=success&message=Webflow_connected_successfully&webflowAuthId=${webflowAuthId}`
-            : '/dashboard/notion-to-blogs/new?webflow_auth=success&message=Webflow_connected_successfully';
+        if (result.status === 'success' && result.webflowAuthId && result.siteId) {
+          const { webflowAuthId, siteId, siteName } = result;
           
-          navigate(redirectUrl);
+          const params = new URLSearchParams({
+            webflow_auth: 'success',
+            message: 'Webflow_connected_successfully',
+            webflowAuthId,
+            siteId,
+            siteName,
+          });
+
+          navigate(`/dashboard/notion-to-blogs/new?${params.toString()}`);
         } else {
-          throw new Error(result.message || 'Backend failed to process Webflow token.');
+          throw new Error(result.message || 'Backend failed to process Webflow token or returned incomplete data.');
         }
       } catch (err) {
         console.error('Error sending Webflow code to backend (Axios catch):', err.response?.data || err.message);

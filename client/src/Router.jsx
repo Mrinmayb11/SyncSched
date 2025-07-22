@@ -14,7 +14,7 @@ import { loader as authConfirmLoader } from "./pages/login_signup/routes/auth.co
 import  AuthError  from "./pages/login_signup/routes/auth.error";
 import WebflowOAuthRedirect from './auth/WebflowOAuthRedirect';
 import NotionOAuthRedirect from './auth/NotionOAuthRedirect';
-import SyncSetupWizard from './pages/dashboard/routes/Notion_Blogs/SyncSetupWizard';
+import SyncSetupWizard from './pages/dashboard/routes/Notion_Blogs/components/sync-steps/SyncSetupWizard';
 
 
 

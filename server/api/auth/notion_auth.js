@@ -53,15 +53,52 @@ router.post('/api/notion/complete-auth', requireAuth, async (req, res) => {
         );
 
         const notionOAuthData = tokenResponse.data;
+        const accessToken = notionOAuthData.access_token;
         console.log('Successfully exchanged code for Notion token.');
+
+        // 2. NEW: Search for the single page the user authorized
+        console.log('Searching for the authorized page...');
+        const searchResponse = await axios.post(
+          'https://api.notion.com/v1/search',
+          {}, // Empty body to search all accessible pages/databases
+          {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Notion-Version': '2022-06-28'
+            }
+          }
+        );
+        
+        const accessiblePages = searchResponse.data.results.filter(
+          result => result.object === 'page'
+        );
+
+        if (accessiblePages.length !== 1) {
+            const errorMessage = `Expected exactly one page to be authorized, but found ${accessiblePages.length}. Please re-authenticate and select only a single parent page for the integration.`;
+            console.error(errorMessage);
+            return res.status(400).json({ message: errorMessage });
+        }
+
+        const authorizedPage = accessiblePages[0];
+        const authorizedPageId = authorizedPage.id;
+        console.log(`Found single authorized page with ID: ${authorizedPageId}`);
+
+        // 3. Add the found page ID to the data object to be saved
+        const dataToSave = {
+            ...notionOAuthData,
+            authorized_page_id: authorizedPageId
+        };
   
-        // 2. Save Notion Token to Supabase, passing userId
-        console.log('Attempting to save Notion token to database...');
-        await save_notion_access_token(userId, notionOAuthData);
+        // 4. Save Notion Token to Supabase
+        console.log('Attempting to save Notion token and page ID to database...');
+        const newAuthRecord = await save_notion_access_token(userId, dataToSave);
         console.log('Successfully saved Notion token to database.');
 
         // Send success response back to the frontend
-        res.status(200).json({ message: 'Notion connection successful.' });
+        res.status(200).json({ 
+          message: 'Notion connection successful.',
+          notionAuthId: newAuthRecord.id
+        });
 
       } catch (error) {
         // Log detailed error from Notion API or database save

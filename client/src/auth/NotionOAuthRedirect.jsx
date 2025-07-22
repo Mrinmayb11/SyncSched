@@ -51,11 +51,11 @@ function NotionOAuthRedirect() {
         const response = await axiosInstance.post('/api/notion/complete-auth', { code });
         const result = response.data;
 
-        // Check for success: either result.status === 'success' OR result.message indicates success
-        if (result.status === 'success' || (result.message && result.message.includes('connection successful'))) {
-          navigate('/dashboard/notion-to-blogs/new?notion_auth=success&message=Notion_connected_successfully');
+        // Check for success and presence of notionAuthId
+        if (result.message.includes('successful') && result.notionAuthId) {
+          navigate(`/dashboard/notion-to-blogs/new?notion_auth=success&message=Notion_connected_successfully&notionAuthId=${result.notionAuthId}`);
         } else {
-          throw new Error(result.message || 'Backend failed to process Notion token.');
+          throw new Error(result.message || 'Backend failed to process Notion token or did not return an ID.');
         }
       } catch (err) {
         console.error('Notion OAuth error:', err.response?.data || err.message);

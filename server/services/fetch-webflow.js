@@ -248,7 +248,6 @@ async function fetchAllWebflowData(userId) { // MUST NOW ACCEPT userId
             items = itemsResponse.items || [];
         } catch (error) {
             console.error(`Error fetching items for collection ${collection.displayName}:`, error.message);
-            // Decide if we should continue without items or return null/empty for this collection
         }
 
         return {
@@ -259,7 +258,9 @@ async function fetchAllWebflowData(userId) { // MUST NOW ACCEPT userId
         };
     }));
 
-    return detailedCollectionsData.filter(Boolean); // Filter out any potential nulls if error handling decides to return null
+    // Filter out any collections that might have failed fetching details
+    const finalData = detailedCollectionsData.filter(Boolean);
+    return finalData;
 }
 
 

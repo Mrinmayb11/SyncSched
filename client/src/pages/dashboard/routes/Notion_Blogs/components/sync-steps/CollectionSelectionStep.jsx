@@ -79,22 +79,22 @@ export default function CollectionSelectionStep({ platformId, webflowAuthId, sel
             </p>
           </div>
         )}
-        {collections.map(collection => (
+                            {collections.map(collection => (
           <div key={collection.id} className="flex items-center space-x-3 p-3 border rounded-lg hover:bg-gray-50">
-            <Checkbox
+                                <Checkbox
               id={collection.id}
               checked={selectedCollections.includes(collection.id)}
               onCheckedChange={() => handleCheckboxChange(collection.id)}
-            />
-            <label
+                                />
+                                <label
               htmlFor={collection.id}
               className="flex-1 text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
-            >
+                                >
               {collection.displayName || collection.name}
-            </label>
-          </div>
-        ))}
-      </div>
+                                </label>
+                            </div>
+                            ))}
+                        </div>
     );
   };
 

@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import PlatformSelectionStep from './components/sync-steps/PlatformSelectionStep';
-import NotionConnectionStep from './components/sync-steps/NotionConnectionStep';
-import CollectionSelectionStep from './components/sync-steps/CollectionSelectionStep';
-import StartSyncStep from './components/sync-steps/StartSyncStep';
+import PlatformSelectionStep from './PlatformSelectionStep';
+import NotionConnectionStep from './NotionConnectionStep';
+import CollectionSelectionStep from './CollectionSelectionStep';
+import StartSyncStep from './StartSyncStep';
 
 export default function SyncSetupWizard() {
   const navigate = useNavigate();
@@ -17,6 +17,9 @@ export default function SyncSetupWizard() {
   const [platformConnected, setPlatformConnected] = useState(false);
   const [notionConnected, setNotionConnected] = useState(false);
   const [webflowAuthId, setWebflowAuthId] = useState(null);
+  const [webflowSiteId, setWebflowSiteId] = useState(null);
+  const [webflowSiteName, setWebflowSiteName] = useState('');
+  const [notionAuthId, setNotionAuthId] = useState(null);
 
   // Initialize state from localStorage and URL parameters on mount
   useEffect(() => {
@@ -27,6 +30,9 @@ export default function SyncSetupWizard() {
     const savedCollections = localStorage.getItem('syncsched_selected_collections');
     const savedStep = localStorage.getItem('syncsched_current_step');
     const savedWebflowAuthId = localStorage.getItem('syncsched_webflow_auth_id');
+    const savedWebflowSiteId = localStorage.getItem('syncsched_webflow_site_id');
+    const savedWebflowSiteName = localStorage.getItem('syncsched_webflow_site_name');
+    const savedNotionAuthId = localStorage.getItem('syncsched_notion_auth_id');
     
     // Check if we're coming back from OAuth
     const hasWebflowAuth = params.has('webflow_auth');
@@ -56,6 +62,15 @@ export default function SyncSetupWizard() {
     
     if (savedWebflowAuthId) {
       setWebflowAuthId(savedWebflowAuthId);
+    }
+    if (savedWebflowSiteId) {
+      setWebflowSiteId(savedWebflowSiteId);
+    }
+    if (savedWebflowSiteName) {
+      setWebflowSiteName(savedWebflowSiteName);
+    }
+    if (savedNotionAuthId) {
+      setNotionAuthId(savedNotionAuthId);
     }
     
     if (savedCollections) {
@@ -134,12 +149,27 @@ export default function SyncSetupWizard() {
         localStorage.setItem('syncsched_webflow_auth_id', data.webflowAuthId);
         console.log(`SyncSetupWizard: Received and stored webflowAuthId: ${data.webflowAuthId}`);
       }
+      if (isConnected && data && data.siteId) {
+        setWebflowSiteId(data.siteId);
+        localStorage.setItem('syncsched_webflow_site_id', data.siteId);
+        console.log(`SyncSetupWizard: Received and stored webflowSiteId: ${data.siteId}`);
+      }
+      if (isConnected && data && data.siteName) {
+        setWebflowSiteName(data.siteName);
+        localStorage.setItem('syncsched_webflow_site_name', data.siteName);
+        console.log(`SyncSetupWizard: Received and stored webflowSiteName: ${data.siteName}`);
+      }
     }
   };
 
-  const handleNotionConnectionStatusChange = (isConnected) => {
+  const handleNotionConnectionStatusChange = (isConnected, data) => {
     setNotionConnected(isConnected);
     localStorage.setItem('syncsched_notion_connected', isConnected.toString());
+    if (isConnected && data && data.notionAuthId) {
+      setNotionAuthId(data.notionAuthId);
+      localStorage.setItem('syncsched_notion_auth_id', data.notionAuthId);
+      console.log(`SyncSetupWizard: Received and stored notionAuthId: ${data.notionAuthId}`);
+    }
   };
 
   const handleCollectionsSelect = (collections) => {
@@ -147,14 +177,21 @@ export default function SyncSetupWizard() {
     localStorage.setItem('syncsched_selected_collections', JSON.stringify(collections));
   };
 
-  const handleSyncComplete = () => {
+  const clearSyncData = () => {
     // Clear localStorage when sync is complete
     localStorage.removeItem('syncsched_selected_platform');
     localStorage.removeItem('syncsched_platform_connected');
     localStorage.removeItem('syncsched_notion_connected');
     localStorage.removeItem('syncsched_selected_collections');
     localStorage.removeItem('syncsched_current_step');
+    localStorage.removeItem('syncsched_webflow_auth_id');
+    localStorage.removeItem('syncsched_webflow_site_id');
+    localStorage.removeItem('syncsched_webflow_site_name');
+    localStorage.removeItem('syncsched_notion_auth_id');
+  };
     
+  const handleSyncComplete = () => {
+    clearSyncData();
     // Navigate back to the main dashboard
     navigate('/dashboard/notion-to-blogs');
   };
@@ -172,6 +209,10 @@ export default function SyncSetupWizard() {
     localStorage.removeItem('syncsched_notion_connected');
     localStorage.removeItem('syncsched_selected_collections');
     localStorage.removeItem('syncsched_current_step');
+    localStorage.removeItem('syncsched_webflow_auth_id');
+    localStorage.removeItem('syncsched_webflow_site_id');
+    localStorage.removeItem('syncsched_webflow_site_name');
+    localStorage.removeItem('syncsched_notion_auth_id');
   };
 
   const renderCurrentStep = () => {
@@ -214,11 +255,16 @@ export default function SyncSetupWizard() {
         return (
           <StartSyncStep
             selectedPlatform={selectedPlatform}
+            webflowAuthId={webflowAuthId}
+            webflowSiteId={webflowSiteId}
+            webflowSiteName={webflowSiteName}
+            notionAuthId={notionAuthId}
             selectedCollections={selectedCollections}
             platformConnected={platformConnected}
             notionConnected={notionConnected}
             onResetFlow={handleResetFlow}
             onSyncComplete={handleSyncComplete}
+            onClearSyncData={clearSyncData}
           />
         );
       default:

@@ -18,6 +18,11 @@ export default defineConfig({
         target: 'https://backend.syncsched.com',
         changeOrigin: true,
         secure: false
+      },
+      '/api/notion/webhook': {
+        target: 'https://backend.syncsched.com',
+        changeOrigin: true,
+        secure: false
       }
     },
     host: '0.0.0.0',

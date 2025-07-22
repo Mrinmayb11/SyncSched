@@ -3,4 +3,16 @@ description:
 globs: 
 alwaysApply: true
 ---
-@
+This project is a fullstack application that enables users to create a **two-way sync** between their **Notion workspace** and various **content management systems (CMS)** including Webflow, WordPress, Framer, and potentially others.
+
+  🔄 Core Purpose:
+  Users manage their content (like blog posts or CMS collection items) from **Notion** and have changes automatically reflected on their connected CMS platform — and vice versa.
+
+  📚 Key Features:
+  - **Notion as Source of Truth**: Users can write blog posts or create CMS content items directly from Notion pages.
+  - **Two-way Sync**:
+    - Notion → CMS: Automatically publish or update content on the CMS when a Notion page is created or edited.
+    - CMS → Notion: Reflect changes made in the CMS back into Notion (title, content, status).
+  - **CMS Adapters**: Modular integration system to support multiple CMS platforms, each with their own API and content structure.
+  - **Real-time or Scheduled Sync**: Uses webhooks (where available) or polling to detect and push changes.
+

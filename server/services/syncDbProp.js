@@ -1,7 +1,8 @@
 import { Client } from "@notionhq/client";
 import 'dotenv/config';
 import pLimit from 'p-limit';
-import { get_notion_access_token, parent_page_id } from './fetch-notion.js';
+import { get_notion_access_token } from './fetch-notion.js';
+import { get_notion_auth_by_id, save_field_mappings } from '../database/save-notionInfo.js';
 
 
 
@@ -21,19 +22,14 @@ async function NotionInit(userId) {
 }
 
 
-async function createNotionPages(userId, webflowCollectionsStructure) {
+async function createNotionPages(userId, webflowCollectionsStructure, parentId) {
     if (!userId) throw new Error("User ID required for createNotionPages");
-    const { notion, notionToken } = await NotionInit(userId);
+    if (!parentId) throw new Error("Parent Page ID is required for createNotionPages");
+
+    const { notion } = await NotionInit(userId);
 
     // Use the passed argument
     if (!webflowCollectionsStructure || webflowCollectionsStructure.length === 0) {
-        return [];
-    }
-
-    const parentId = await parent_page_id(notionToken); // This uses the token, doesn't need userId directly
-
-    if (!parentId) {
-        console.error("Could not determine Notion parent page ID. Cannot create pages.");
         return [];
     }
 
@@ -169,11 +165,13 @@ function mapingFields(webflowFields) {
     return propertiesSchema;
 }
 
-// Accept userId and webflowCollectionsStructure as arguments
-async function CreateDatabases(userId, webflowCollectionsStructure) {
+// Accept userId, webflowCollectionsStructure, the authorized parentPageId, and integrationId as arguments
+async function CreateDatabases(userId, webflowCollectionsStructure, authorizedParentPageId, integrationId) {
     if (!userId) throw new Error("User ID required for CreateDatabases");
+    if (!authorizedParentPageId) throw new Error("Authorized Parent Page ID is required for CreateDatabases");
+    if (!integrationId) throw new Error("Integration ID is required for CreateDatabases to save field mappings");
     
-    const createdPageResults = await createNotionPages(userId, webflowCollectionsStructure);
+    const createdPageResults = await createNotionPages(userId, webflowCollectionsStructure, authorizedParentPageId);
 
     if (!createdPageResults || createdPageResults.length === 0) {
         console.log("No Notion pages created, skipping database creation.");
@@ -226,6 +224,73 @@ async function CreateDatabases(userId, webflowCollectionsStructure) {
                 title: [{ type: 'text', text: { content: dbTitle } }],
                 properties: propertiesSchema,
             });
+
+            // Save field mappings to database
+            try {
+                const fieldMappings = [];
+                const mappedNotionPropertyIds = new Set(); // Track to prevent duplicates
+                
+                // Create field mappings for each Webflow field that was mapped to a Notion property
+                for (const webflowField of webflowFields) {
+                    const notionPropertyName = webflowField.displayName;
+                    
+                    // Skip if no corresponding Notion property exists
+                    if (!database.properties[notionPropertyName]) continue;
+                    
+                    const notionProperty = database.properties[notionPropertyName];
+                    
+                    // Skip if we already mapped this notion property ID
+                    if (mappedNotionPropertyIds.has(notionProperty.id)) {
+                        console.log(`[Field Mapping] Skipping duplicate mapping for Notion property: ${notionPropertyName} (${notionProperty.id})`);
+                        continue;
+                    }
+                    
+                    fieldMappings.push({
+                        notion_property_id: notionProperty.id,
+                        notion_property_name: notionPropertyName,
+                        notion_property_type: notionProperty.type,
+                        webflow_field_slug: webflowField.slug,
+                        webflow_field_name: webflowField.displayName,
+                        webflow_field_type: webflowField.type,
+                        webflow_field_id: webflowField.id || null
+                    });
+                    
+                    mappedNotionPropertyIds.add(notionProperty.id);
+                }
+
+                // Also save mappings for hardcoded properties that don't have Webflow equivalents
+                const hardcodedProperties = ['Name', 'Status', 'Webflow Item ID'];
+                for (const propName of hardcodedProperties) {
+                    if (database.properties[propName]) {
+                        const notionProperty = database.properties[propName];
+                        
+                        // Skip if we already mapped this notion property ID
+                        if (mappedNotionPropertyIds.has(notionProperty.id)) {
+                            console.log(`[Field Mapping] Skipping duplicate hardcoded mapping for Notion property: ${propName} (${notionProperty.id})`);
+                            continue;
+                        }
+                        
+                        fieldMappings.push({
+                            notion_property_id: notionProperty.id,
+                            notion_property_name: propName,
+                            notion_property_type: notionProperty.type,
+                            webflow_field_slug: propName === 'Name' ? 'name' : (propName === 'Webflow Item ID' ? 'webflow_item_id' : 'status'),
+                            webflow_field_name: propName,
+                            webflow_field_type: 'system',
+                            webflow_field_id: null
+                        });
+                        
+                        mappedNotionPropertyIds.add(notionProperty.id);
+                    }
+                }
+
+                if (fieldMappings.length > 0) {
+                    await save_field_mappings(integrationId, database.id, webflowCollectionId, fieldMappings);
+                }
+            } catch (fieldMappingError) {
+                console.error(`Error saving field mappings for database ${database.id}:`, fieldMappingError.message);
+                // Don't fail the entire database creation if field mapping fails
+            }
 
             // Return structured info including Webflow details needed later
             return {

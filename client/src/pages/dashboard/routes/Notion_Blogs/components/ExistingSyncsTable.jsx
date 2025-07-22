@@ -34,9 +34,9 @@ const IntegrationRow = ({ integration, onEdit, onDelete }) => {
                 </TableCell>
                 <TableCell className="font-medium">
                     <div className="flex items-center gap-2">
-                        <span>{integration.source.site_name || 'Unnamed Site'}</span>
+                        <span>{integration.webflow_site_name || integration.source?.site_name || 'Unnamed Site'}</span>
                         <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                        <span>{integration.target.page_name || 'Unnamed Page'}</span>
+                        <span>{integration.notion_workspace_name || integration.target?.page_name || 'Notion Workspace'}</span>
                     </div>
                     {integration.integration_name && (
                       <p className="text-sm text-muted-foreground">{integration.integration_name}</p>
@@ -44,14 +44,14 @@ const IntegrationRow = ({ integration, onEdit, onDelete }) => {
                 </TableCell>
                 <TableCell>
                     <Badge variant={integration.status === 'active' ? 'secondary' : 'outline'}>
-                        {integration.status}
+                        {integration.status || 'active'}
                     </Badge>
                 </TableCell>
                 <TableCell className="hidden md:table-cell">
                     {hasMappings ? `${integration.mappings.length} mappings` : 'No mappings'}
                 </TableCell>
                 <TableCell className="hidden md:table-cell">
-                    {new Date(integration.created_at).toLocaleDateString()}
+                    {integration.created_at ? new Date(integration.created_at).toLocaleDateString() : 'N/A'}
                 </TableCell>
                 <TableCell>
                     <Button variant="ghost" size="icon" onClick={() => onEdit(integration.id)}>

@@ -42,8 +42,11 @@ export default function NotionToBlogsPage() {
   };
 
   useEffect(() => {
-    fetchExistingSyncs();
-  }, [location.pathname]); // Refetch when the route changes, e.g., after completing setup
+    // Only fetch integrations if we are on the main page, not the 'new' setup page.
+    if (location.pathname === '/dashboard/notion-to-blogs') {
+      fetchExistingSyncs();
+    }
+  }, [location.pathname]); // Refetch when the route changes
 
 
   const handleAddNew = () => {
@@ -76,7 +79,7 @@ export default function NotionToBlogsPage() {
   );
 
 
-  return (
+  return (  
     <div className="p-6 max-w-4xl mx-auto">
         <Breadcrumb className="mb-6">
           <BreadcrumbList>
@@ -92,9 +95,9 @@ export default function NotionToBlogsPage() {
           </BreadcrumbList>
         </Breadcrumb>
       
-      {isLoading ? renderLoading() :
+      {isLoading && location.pathname !== '/dashboard/notion-to-blogs/new' ? renderLoading() :
        error ? renderError() :
-       (location.pathname.includes('/new') ? <Outlet /> : renderTableView())
+       location.pathname.includes('/new') ? <Outlet /> : renderTableView()
       }
     </div>
   );

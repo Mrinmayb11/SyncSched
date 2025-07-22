@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { CheckCircle, XCircle } from "lucide-react";
 
-
 const AVAILABLE_PLATFORMS = [
   {
     id: "webflow",
@@ -39,103 +38,88 @@ export default function PlatformSelectionStep({
   onPlatformSelect, 
   onNext,
   platformConnected,
-  onConnectionStatusChange
+  onConnectionStatusChange,
 }) {
   const location = useLocation();
   const navigate = useNavigate();
   const hasAdvancedRef = useRef(false);
 
-  const [connectionAttemptMessage, setConnectionAttemptMessage] = useState('');
-  const [connectionAttemptStatus, setConnectionAttemptStatus] = useState(null);
+  const [connectionMessage, setConnectionMessage] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState(null); // 'success', 'error', or null
+  const [connectedSiteName, setConnectedSiteName] = useState('');
 
   const currentPlatformDetails = AVAILABLE_PLATFORMS.find(p => p.id === selectedPlatform);
 
-  // Check localStorage for existing connection status on mount
+  // Effect to handle the OAuth callback from the redirect handler
   useEffect(() => {
-    const savedPlatform = localStorage.getItem('syncsched_selected_platform');
-    const savedConnected = localStorage.getItem('syncsched_platform_connected') === 'true';
-    
-    if (savedPlatform && savedConnected && savedPlatform === selectedPlatform) {
-      setConnectionAttemptStatus('success');
-      const platformDetails = AVAILABLE_PLATFORMS.find(p => p.id === savedPlatform);
-      setConnectionAttemptMessage(`${platformDetails?.name || savedPlatform} connected successfully!`);
-    }
-  }, [selectedPlatform]);
-
-  useEffect(() => {
-    // Check for OAuth status in URL parameters on every component load/re-render
     const params = new URLSearchParams(location.search);
-    
-    // Check all available platforms for OAuth status
-    AVAILABLE_PLATFORMS.forEach(platform => {
-      if (params.has(platform.statusQueryParam)) {
-        const status = params.get(platform.statusQueryParam);
-        const msg = params.get('message');
-        const webflowAuthId = params.get('webflowAuthId'); // Extract webflowAuthId from URL
-        
-        const isSuccess = status === 'success';
-        setConnectionAttemptStatus(isSuccess ? 'success' : 'error');
-        setConnectionAttemptMessage(msg?.replace(/_/g, ' ') || (isSuccess ? `${platform.name} connected successfully!` : `${platform.name} connection failed.`));
-        
-        // Auto-select the platform if OAuth was successful and no platform is currently selected
-        if (isSuccess && !selectedPlatform) {
+    const platform = AVAILABLE_PLATFORMS.find(p => params.has(p.statusQueryParam));
+
+    if (platform) {
+      const status = params.get(platform.statusQueryParam);
+      const message = params.get('message')?.replace(/_/g, ' ') || '';
+      const isSuccess = status === 'success';
+
+      setConnectionStatus(isSuccess ? 'success' : 'error');
+      setConnectionMessage(message);
+
+      if (isSuccess) {
+        const authId = params.get('webflowAuthId');
+        const siteId = params.get('siteId');
+        const siteName = params.get('siteName');
+
+        setConnectedSiteName(siteName || 'your site');
+
+        if (!selectedPlatform) {
           onPlatformSelect(platform.id);
-          localStorage.setItem('syncsched_selected_platform', platform.id);
-          localStorage.setItem('syncsched_platform_connected', 'true');
         }
         
         if (onConnectionStatusChange) {
-          // Pass the webflowAuthId in the data object
-          const responseData = { webflowAuthId };
-          onConnectionStatusChange(platform.id, isSuccess, responseData);
+          onConnectionStatusChange(platform.id, true, { webflowAuthId: authId, siteId, siteName });
         }
 
-        // Clean up URL parameters immediately
-        navigate(location.pathname, { replace: true });
-
-        // Automatically advance to next step if connection was successful
-        if (isSuccess && onNext && !hasAdvancedRef.current) {
+        // Auto-advance after showing the success message
+        if (onNext && !hasAdvancedRef.current) {
           hasAdvancedRef.current = true;
-          console.log('PlatformSelectionStep - Auto-advancing to Collections step in 3 seconds...');
-          setTimeout(() => {
-            if (selectedPlatform || platform.id) {
-              console.log('PlatformSelectionStep - Calling onNext() to go to Collections');
-              onNext();
-            }
-          }, 3000);
+          setTimeout(() => onNext(), 2000);
         }
+      } else if (onConnectionStatusChange) {
+        onConnectionStatusChange(platform.id, false);
       }
-    });
-  }, [location.search, navigate, onConnectionStatusChange, onNext, selectedPlatform, onPlatformSelect]);
+      
+      // Clean up URL parameters immediately
+      navigate(location.pathname, { replace: true });
+    }
+  }, [location.search, navigate, onConnectionStatusChange, onPlatformSelect, selectedPlatform, onNext]);
+
 
   const handleConnectAndProceed = () => {
-    if (platformConnected) {
-      onNext();
-    } else if (currentPlatformDetails && currentPlatformDetails.authUrl) {
+    if (currentPlatformDetails && currentPlatformDetails.authUrl) {
+      // Redirect to the backend auth initiator, which will then redirect to Webflow
       window.location.href = currentPlatformDetails.authUrl;
     }
   };
   
-  // If platform is connected, show only success message
-  if (platformConnected) {
+  // If platform is already connected (e.g., from previous step or callback)
+  if (platformConnected || connectionStatus === 'success') {
     return (
       <Card>
         <CardHeader>
           <CardTitle>Step 1: Source Platform Connected</CardTitle>
           <CardDescription>
-            {currentPlatformDetails?.name || selectedPlatform} has been successfully connected.
+            Your {currentPlatformDetails?.name || 'source'} account is connected.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <Alert variant="success" className="mt-4">
+        <CardContent>
+          <Alert variant="success">
             <CheckCircle className="h-4 w-4" />
-            <AlertTitle>Connected!</AlertTitle>
+            <AlertTitle>Connected to {currentPlatformDetails?.name}!</AlertTitle>
             <AlertDescription>
-              {connectionAttemptMessage || `${currentPlatformDetails?.name || selectedPlatform} connected successfully! Proceeding to content selection...`}
+              Successfully connected to {connectedSiteName}.
             </AlertDescription>
           </Alert>
-          <p className="text-sm text-muted-foreground">
-            Automatically advancing to the next step...
+          <p className="mt-4 text-sm text-muted-foreground">
+            Automatically proceeding to the next step...
           </p>
         </CardContent>
       </Card>
@@ -174,18 +158,11 @@ export default function PlatformSelectionStep({
           ))}
         </RadioGroup>
 
-        {connectionAttemptStatus === 'success' && connectionAttemptMessage && (
-          <Alert variant="success" className="mt-4">
-            <CheckCircle className="h-4 w-4" />
-            <AlertTitle>Connected!</AlertTitle>
-            <AlertDescription>{connectionAttemptMessage}</AlertDescription>
-          </Alert>
-        )}
-        {connectionAttemptStatus === 'error' && connectionAttemptMessage && (
+        {connectionStatus === 'error' && connectionMessage && (
           <Alert variant="destructive" className="mt-4">
             <XCircle className="h-4 w-4" />
             <AlertTitle>Connection Failed</AlertTitle>
-            <AlertDescription>{connectionAttemptMessage}</AlertDescription>
+            <AlertDescription>{connectionMessage}</AlertDescription>
           </Alert>
         )}
 
@@ -194,7 +171,7 @@ export default function PlatformSelectionStep({
           disabled={!selectedPlatform || AVAILABLE_PLATFORMS.find(p => p.id === selectedPlatform)?.disabled}
           className="mt-6"
         >
-          {platformConnected ? 'Proceed to Next Step' : (currentPlatformDetails ? `Connect ${currentPlatformDetails.name} & Proceed` : 'Select a Platform')}
+          {`Connect ${currentPlatformDetails?.name || ''} & Proceed`}
         </Button>
       </CardContent>
     </Card>

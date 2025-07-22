@@ -8,6 +8,13 @@ import {
     ensureWebflowNotionIdField,
     updateWebflowItemWithNotionId
 } from './establishLink.js';
+import {
+    save_item_mapping,
+    get_item_mapping,
+    get_all_item_mappings,
+    update_item_mapping_sync_time,
+    cleanup_deleted_item_mappings
+} from '../database/save-notionInfo.js';
 
 /**
  * Maps Webflow item field data to Notion page properties format.
@@ -429,20 +436,33 @@ function extractAndConvertRichTextToBlocks(webflowItemFieldData, webflowFieldsSc
  * @param {string} userId - The ID of the authenticated Supabase user.
  * @param {Array<object>} createdDatabasesInfo - Info about linked Notion DBs/Webflow Collections.
  * @param {Array<{collectionId: string, collectionName: string, fields: Array<object>, items: Array<object>}>} allWebflowData - The comprehensive data fetched from Webflow.
+ * @param {number} integrationId - The site integration ID for tracking mappings.
  * @returns {Promise<{webflowItemToNotionPageMap: Map<string, string>, stats: object}>}
  */
-export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo, allWebflowData) {
+export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo, allWebflowData, integrationId) {
     if (!userId) throw new Error("User ID required for syncWebflowItemsToNotionPages");
+    if (!integrationId) throw new Error("Integration ID required for item mapping tracking");
     const { notion } = await NotionInit(userId); // Initialize Notion client once with userId
-    // Remove internal fetch of items
-    // const allItemsData = await getCollectionItems(); 
 
     // Create a map from collectionId to its full data for easier lookup
     const webflowDataMap = new Map(allWebflowData.map(data => [data.collectionId, data]));
 
     const limit = pLimit(2); // Notion API concurrency limit
     const webflowItemToNotionPageMap = new Map();
-    let stats = { created: 0, updatedLinks: 0, failedCreation: 0, failedLinkUpdate: 0 };
+    let stats = { created: 0, updated: 0, updatedLinks: 0, failedCreation: 0, failedLinkUpdate: 0, skipped: 0 };
+
+    // Load existing item mappings for this integration
+    console.log(`Loading existing item mappings for integration ${integrationId}...`);
+    const existingMappings = await get_all_item_mappings(integrationId);
+    const existingMappingsMap = new Map(
+        existingMappings.map(mapping => [mapping.webflow_item_id, mapping])
+    );
+    console.log(`Found ${existingMappings.length} existing item mappings`);
+
+    // Collect all current Webflow item IDs for cleanup later
+    const allCurrentWebflowItemIds = allWebflowData.flatMap(data => 
+        (data.items || []).filter(item => !item.isArchived).map(item => item.id)
+    );
 
     // Ensure linking fields exist (do this once per collection before processing items)
     const linkingFieldsSetupPromises = createdDatabasesInfo.map(dbInfo => limit(async () => {
@@ -480,9 +500,20 @@ export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo
             }
 
             const webflowItemFieldData = item.fieldData || {};
-            // Check if page already exists (e.g., from a previous partial run)
-            // This requires fetching/querying Notion - potentially complex
-            // For now, assumes we always create.
+            
+            // Check if this item already has a mapping
+            const existingMapping = existingMappingsMap.get(webflowItemId);
+            let notionPageId = null;
+            let isExistingPage = false;
+
+            if (existingMapping) {
+                notionPageId = existingMapping.notion_page_id;
+                isExistingPage = true;
+                console.log(`[Item Mapping] Found existing mapping: Webflow ${webflowItemId} -> Notion ${notionPageId}`);
+                
+                // Add to map for later use
+                webflowItemToNotionPageMap.set(webflowItemId, notionPageId);
+            }
 
             try {
                 // 1. Map Properties & Convert Content
@@ -497,17 +528,74 @@ export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo
                     webflowFieldsSchema
                 );
 
-               
-
-                // 2. Create Notion Page
+                if (isExistingPage && notionPageId) {
+                    // 2a. Update existing Notion Page
+                    try {
+                        await notion.pages.update({
+                            page_id: notionPageId,
+                            properties: notionPageProperties,
+                        });
+                        
+                        // Update blocks if there are any
+                        if (notionPageBlocks.length > 0) {
+                            // First, get existing blocks and delete them
+                            try {
+                                const existingBlocks = await notion.blocks.children.list({
+                                    block_id: notionPageId
+                                });
+                                
+                                // Delete existing blocks
+                                if (existingBlocks.results.length > 0) {
+                                    await Promise.all(
+                                        existingBlocks.results.map(block => 
+                                            notion.blocks.delete({ block_id: block.id })
+                                        )
+                                    );
+                                }
+                                
+                                // Add new blocks
+                                await notion.blocks.children.append({
+                                    block_id: notionPageId,
+                                    children: notionPageBlocks
+                                });
+                            } catch (blockError) {
+                                console.warn(`[Block Update] Failed to update blocks for page ${notionPageId}:`, blockError.message);
+                            }
+                        }
+                        
+                        stats.updated++;
+                        console.log(`[Item Sync] Updated existing Notion page ${notionPageId} for Webflow item ${webflowItemId}`);
+                        
+                        // Update the mapping timestamp
+                        await update_item_mapping_sync_time(integrationId, webflowItemId, 'webflow_to_notion');
+                        
+                    } catch (updateError) {
+                        console.error(`[Item Sync] Failed to update existing Notion page ${notionPageId}:`, updateError.body ? JSON.stringify(updateError.body) : updateError.message);
+                        stats.failedCreation++;
+                        return;
+                    }
+                } else {
+                    // 2b. Create new Notion Page
+                    try {
                         const newPage = await notion.pages.create({
                             parent: { database_id: notionDbId },
                             properties: notionPageProperties,       
                             children: notionPageBlocks.length > 0 ? notionPageBlocks : undefined,
                         });
-                const notionPageId = newPage.id;
+                        notionPageId = newPage.id;
                 webflowItemToNotionPageMap.set(webflowItemId, notionPageId);
                         stats.created++;
+                        console.log(`[Item Sync] Created new Notion page ${notionPageId} for Webflow item ${webflowItemId}`);
+                        
+                        // Save the new mapping to database
+                        await save_item_mapping(integrationId, webflowItemId, notionPageId, 'webflow_to_notion');
+                        
+                    } catch (createError) {
+                        stats.failedCreation++;
+                        console.error(`Failed to create Notion page for Webflow item ${webflowItemId} in DB ${notionDbId}:`, createError.body ? JSON.stringify(createError.body) : createError.message);
+                        return;
+                    }
+                }
 
                 // 3. Update Links (pass userId, schema to avoid extra WF call)
                 const notionLinkSuccess = await updateNotionPageWithWebflowId(userId, notionPageId, webflowItemId);
@@ -527,10 +615,7 @@ export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo
 
             } catch (error) {
                 stats.failedCreation++;
-                console.error(`Failed to create Notion page for Webflow item ${webflowItemId} in DB ${notionDbId}:`, error.body ? JSON.stringify(error.body) : error.message);
-                // Optionally: Log failing properties/blocks
-                // console.error(`  Properties: ${JSON.stringify(notionPageProperties)}`);
-                // console.error(`  Blocks: ${JSON.stringify(notionPageBlocks)}`);
+                console.error(`Failed to sync Webflow item ${webflowItemId} to Notion:`, error.body ? JSON.stringify(error.body) : error.message);
             }
         })); // End limit wrapper for item
     }); // End flatMap for databases    
@@ -541,6 +626,16 @@ export async function syncWebflowItemsToNotionPages(userId, createdDatabasesInfo
     } catch (error) {
         // This catch might be less likely to hit if individual errors are caught
         console.error("Error occurred during final Promise.all for page sync updates:", error);
+    }
+
+    // --- Cleanup deleted items ---
+    try {
+        const deletedCount = await cleanup_deleted_item_mappings(integrationId, allCurrentWebflowItemIds);
+        if (deletedCount > 0) {
+            console.log(`Cleaned up ${deletedCount} mappings for deleted Webflow items`);
+        }
+    } catch (cleanupError) {
+        console.error('Error during cleanup of deleted item mappings:', cleanupError);
     }
 
     return { webflowItemToNotionPageMap, stats };

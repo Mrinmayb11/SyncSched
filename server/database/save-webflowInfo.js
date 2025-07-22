@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'; // Import the initialized Supabase client
 import 'dotenv/config';
-
+ 
 export async function W_Auth_db(userId, accessToken, platform, siteInfo) {
   if (!supabase) {
     console.error("Supabase client not initialized. Cannot save Webflow auth.");
@@ -17,14 +17,18 @@ export async function W_Auth_db(userId, accessToken, platform, siteInfo) {
   }
 
   try {
+    // Use upsert to handle both new sites and updates to existing sites
     const { data, error } = await supabase
       .from('cms_auth_info')
-      .insert({
+      .upsert({ 
         user_id: userId,
         platform: platform || 'webflow',
         access_token: accessToken,
         site_id: siteInfo.id,
         site_name: siteInfo.name,
+      }, { 
+        onConflict: 'user_id,site_id',
+        ignoreDuplicates: false 
       })
       .select()
       .single();
@@ -34,7 +38,7 @@ export async function W_Auth_db(userId, accessToken, platform, siteInfo) {
       throw error;
     }
 
-    console.log('Successfully saved Webflow auth and site info for user:', userId);
+    console.log('Successfully saved/updated Webflow auth and site info for user:', userId, 'site:', siteInfo.name);
     return data;
   } catch (err) {
     console.error('An exception occurred in W_Auth_db:', err);
@@ -111,7 +115,7 @@ export async function getWebflowToken(userId, authId = null) {
     return data ? data.access_token : null;
 
   } catch (error) {
-    console.error('Exception during getWebflowToken:', error.message);
-    return null;
+      console.error('Exception during getWebflowToken:', error.message);
+      return null;
   }
 }
