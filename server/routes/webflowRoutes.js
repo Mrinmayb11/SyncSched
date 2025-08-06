@@ -235,6 +235,108 @@ router.get('/collections', requireAuth, async (req, res) => {
   }
 });
 
+// Get items for specific collections
+router.get('/collections/items', requireAuth, async (req, res) => {
+  const userId = req.user?.id;
+  const webflowAuthId = req.query.webflowAuthId;
+  const collectionIds = req.query.collectionIds; // comma-separated string
+
+  if (!userId) {
+    return res.status(401).json({ error: 'Authentication failed or user ID missing.' });
+  }
+
+  if (!webflowAuthId) {
+    return res.status(400).json({ error: 'A webflowAuthId query parameter is required.' });
+  }
+
+  if (!collectionIds) {
+    return res.status(400).json({ error: 'collectionIds query parameter is required.' });
+  }
+
+  try {
+    // 1. Get the specific Webflow auth record for the user using the provided ID.
+    const { data: authRecord, error } = await supabase
+      .from('cms_auth_info')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('id', webflowAuthId)
+      .single();
+
+    if (error || !authRecord) {
+      console.error(`Could not find webflowAuthId ${webflowAuthId} for user ${userId}`, error);
+      return res.status(404).json({ error: 'Webflow connection not found. Please try reconnecting.' });
+    }
+
+    if (!authRecord.site_id || !authRecord.access_token) {
+      return res.status(400).json({ error: 'The stored Webflow connection is incomplete and missing a Site ID. Please reconnect.' });
+    }
+
+    // 2. Parse collection IDs
+    const collectionIdArray = collectionIds.split(',').map(id => id.trim()).filter(Boolean);
+    
+    if (collectionIdArray.length === 0) {
+      return res.status(400).json({ error: 'At least one valid collection ID is required.' });
+    }
+
+    // 3. Initialize Webflow client
+    const webflow = new WebflowClient({ accessToken: authRecord.access_token });
+
+    // 4. Fetch items for each collection in parallel
+    const itemsData = await Promise.all(
+      collectionIdArray.map(async (collectionId) => {
+        try {
+          const itemsResponse = await webflow.collections.items.listItems(collectionId);
+          const items = itemsResponse.items || [];
+          
+          // Also get collection info for display purposes
+          const collectionInfo = await webflow.collections.get(collectionId);
+          
+          return {
+            collectionId,
+            collectionName: collectionInfo.displayName || collectionInfo.name,
+            itemCount: items.length,
+            items: items.map(item => ({
+              id: item.id,
+              name: item.fieldData?.name || item.fieldData?.title || `Item ${item.id}`,
+              slug: item.fieldData?.slug || '',
+              isArchived: item.isArchived || false,
+              isDraft: item.isDraft || false,
+              lastPublished: item.lastPublished,
+              lastUpdated: item.lastUpdated,
+              fieldData: item.fieldData
+            }))
+          };
+        } catch (itemError) {
+          console.error(`Error fetching items for collection ${collectionId}:`, itemError);
+          return {
+            collectionId,
+            collectionName: 'Unknown Collection',
+            itemCount: 0,
+            items: [],
+            error: `Failed to fetch items: ${itemError.message}`
+          };
+        }
+      })
+    );
+
+    console.log(`Fetched items for ${collectionIdArray.length} collections`);
+
+    // 5. Return the items data
+    res.status(200).json({
+      collections: itemsData,
+      totalCollections: itemsData.length,
+      totalItems: itemsData.reduce((sum, col) => sum + col.itemCount, 0)
+    });
+
+  } catch (error) {
+    console.error('Error fetching collection items via DB lookup:', error);
+    if (error.response?.status === 401) {
+      return res.status(401).json({ error: 'Webflow token is invalid or has expired. Please reconnect your account.' });
+    }
+    res.status(500).json({ error: 'An unexpected error occurred while fetching collection items.' });
+  }
+});
+
 // Create integration and start sync
 router.post('/integration/create-and-sync', requireAuth, async (req, res) => {
     const userId = req.user.id;
@@ -244,7 +346,8 @@ router.post('/integration/create-and-sync', requireAuth, async (req, res) => {
         webflow_site_name,
         notion_auth_id, 
         integration_name, 
-        collectionIds 
+        collectionIds,
+        selectedItems = {} // New: object with collectionId -> array of itemIds
     } = req.body;
 
     // Set a longer timeout for this endpoint (5 minutes)
@@ -293,7 +396,7 @@ router.post('/integration/create-and-sync', requireAuth, async (req, res) => {
         });
 
         // Continue with the sync process (this will happen after the response is sent)
-        const syncResult = await runSelectedCollectionsSync(userId, integrationId, collectionIds);
+        const syncResult = await runSelectedCollectionsSync(userId, integrationId, collectionIds, selectedItems);
 
         if (!syncResult.success) {
             console.error(`Sync failed for integration ${integrationId}:`, syncResult.error);

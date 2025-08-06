@@ -23,6 +23,7 @@ export default function StartSyncStep({
   webflowSiteName,
   notionAuthId,
   selectedCollections, 
+  selectedItems = {}, // New prop for selected items
   platformConnected, 
   notionConnected,
   onResetFlow,
@@ -65,6 +66,7 @@ export default function StartSyncStep({
         notion_auth_id: notionAuthId,
         integration_name: integrationName,
         collectionIds: selectedCollections,
+        selectedItems: selectedItems, // Include selected items for granular sync
       });
 
       // Handle both 202 (processing) and 200 (success) responses
@@ -164,6 +166,12 @@ export default function StartSyncStep({
           <h4 className="font-semibold">Summary:</h4>
           <p><strong>Source Site:</strong> {webflowSiteName || 'Webflow Site'}</p>
           <p><strong>Collections to Sync:</strong> {selectedCollections.length} collection(s)</p>
+          {Object.keys(selectedItems).length > 0 && (
+            <p><strong>Specific Items Selected:</strong> {Object.values(selectedItems).reduce((sum, items) => sum + items.length, 0)} item(s) across {Object.keys(selectedItems).length} collection(s)</p>
+          )}
+          {Object.keys(selectedItems).length === 0 && selectedCollections.length > 0 && (
+            <p><strong>Items to Sync:</strong> All items in selected collections</p>
+          )}
           <p><strong>Destination:</strong> Notion</p>
         </div>
 

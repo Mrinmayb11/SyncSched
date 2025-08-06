@@ -14,6 +14,7 @@ export default function SyncSetupWizard() {
   // State for tracking selections and connections
   const [selectedPlatform, setSelectedPlatform] = useState('');
   const [selectedCollections, setSelectedCollections] = useState([]);
+  const [selectedItems, setSelectedItems] = useState({}); // collectionId -> array of itemIds
   const [platformConnected, setPlatformConnected] = useState(false);
   const [notionConnected, setNotionConnected] = useState(false);
   const [webflowAuthId, setWebflowAuthId] = useState(null);
@@ -28,6 +29,7 @@ export default function SyncSetupWizard() {
     const savedConnected = localStorage.getItem('syncsched_platform_connected') === 'true';
     const savedNotionConnected = localStorage.getItem('syncsched_notion_connected') === 'true';
     const savedCollections = localStorage.getItem('syncsched_selected_collections');
+    const savedItems = localStorage.getItem('syncsched_selected_items');
     const savedStep = localStorage.getItem('syncsched_current_step');
     const savedWebflowAuthId = localStorage.getItem('syncsched_webflow_auth_id');
     const savedWebflowSiteId = localStorage.getItem('syncsched_webflow_site_id');
@@ -79,6 +81,15 @@ export default function SyncSetupWizard() {
         setSelectedCollections(collections);
       } catch (e) {
         console.error('Failed to parse saved collections:', e);
+      }
+    }
+    
+    if (savedItems) {
+      try {
+        const items = JSON.parse(savedItems);
+        setSelectedItems(items);
+      } catch (e) {
+        console.error('Failed to parse saved items:', e);
       }
     }
     
@@ -177,12 +188,18 @@ export default function SyncSetupWizard() {
     localStorage.setItem('syncsched_selected_collections', JSON.stringify(collections));
   };
 
+  const handleItemsSelect = (items) => {
+    setSelectedItems(items);
+    localStorage.setItem('syncsched_selected_items', JSON.stringify(items));
+  };
+
   const clearSyncData = () => {
     // Clear localStorage when sync is complete
     localStorage.removeItem('syncsched_selected_platform');
     localStorage.removeItem('syncsched_platform_connected');
     localStorage.removeItem('syncsched_notion_connected');
     localStorage.removeItem('syncsched_selected_collections');
+    localStorage.removeItem('syncsched_selected_items');
     localStorage.removeItem('syncsched_current_step');
     localStorage.removeItem('syncsched_webflow_auth_id');
     localStorage.removeItem('syncsched_webflow_site_id');
@@ -241,6 +258,8 @@ export default function SyncSetupWizard() {
             webflowAuthId={webflowAuthId}
             selectedCollections={selectedCollections}
             onCollectionsSelect={handleCollectionsSelect}
+            selectedItems={selectedItems}
+            onItemsSelect={handleItemsSelect}
             onNext={handleNext}
           />
         );
@@ -260,6 +279,7 @@ export default function SyncSetupWizard() {
             webflowSiteName={webflowSiteName}
             notionAuthId={notionAuthId}
             selectedCollections={selectedCollections}
+            selectedItems={selectedItems}
             platformConnected={platformConnected}
             notionConnected={notionConnected}
             onResetFlow={handleResetFlow}

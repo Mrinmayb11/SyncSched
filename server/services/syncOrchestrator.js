@@ -56,9 +56,10 @@ export async function runFullSyncProcess(userId) {
  * @param {string} userId - The ID of the authenticated Supabase user.
  * @param {number} integrationId - The ID of the site integration where the sync should occur.
  * @param {Array<string>} selectedCollectionIds - Array of Webflow collection IDs to sync.
+ * @param {Object} selectedItems - Optional object with collectionId as key and array of itemIds as value for granular item selection.
  * @returns {Promise<{success: boolean, message: string, error?: any, databasesCreated?: number, pageSyncStats?: object, relationSyncStats?: object, optionSyncStats?: object}>}
  */
-export async function runSelectedCollectionsSync(userId, integrationId, selectedCollectionIds) {
+export async function runSelectedCollectionsSync(userId, integrationId, selectedCollectionIds, selectedItems = {}) {
     if (!userId) {
         console.error("User ID is required to run the sync process.");
         return { success: false, message: "User ID not provided.", error: new Error("User ID missing") };
@@ -98,7 +99,7 @@ export async function runSelectedCollectionsSync(userId, integrationId, selected
         }
 
         // Step 2: Filter Webflow data to include only selected collections
-        const filteredWebflowData = allWebflowData.filter(colData => 
+        let filteredWebflowData = allWebflowData.filter(colData => 
             selectedCollectionIds.includes(colData.collectionId)
         );
 
@@ -109,7 +110,27 @@ export async function runSelectedCollectionsSync(userId, integrationId, selected
 
         console.log(`Filtered to ${filteredWebflowData.length} collections out of ${allWebflowData.length} total collections`);
 
-        // Prepare the items map needed later (only for selected collections)
+        // Filter items within collections if specific items were selected
+        if (selectedItems && Object.keys(selectedItems).length > 0) {
+            filteredWebflowData = filteredWebflowData.map(colData => {
+                const selectedItemIds = selectedItems[colData.collectionId];
+                if (selectedItemIds && selectedItemIds.length > 0) {
+                    // Filter to only selected items
+                    const filteredItems = (colData.items || []).filter(item => 
+                        selectedItemIds.includes(item.id)
+                    );
+                    console.log(`Collection ${colData.collectionName}: filtered from ${colData.items?.length || 0} to ${filteredItems.length} items`);
+                    return {
+                        ...colData,
+                        items: filteredItems
+                    };
+                }
+                // If no specific items selected for this collection, include all items
+                return colData;
+            });
+        }
+
+        // Prepare the items map needed later (only for selected collections and items)
         const allWebflowItemsByCollection = filteredWebflowData.reduce((acc, colData) => {
             acc[colData.collectionId] = colData.items || [];
             return acc;

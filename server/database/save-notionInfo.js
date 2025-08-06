@@ -532,3 +532,105 @@ export async function get_all_field_mappings(siteIntegrationId) {
         return null;
     }
 } 
+
+/**
+ * Gets an existing item mapping for a Notion page
+ * @param {string} notionPageId - The Notion page ID
+ * @returns {Promise<object|null>} - The existing mapping or null if not found
+ */
+export async function get_item_mapping_by_notion_page_id(notionPageId) {
+    if (!supabase) throw new Error("Supabase client not initialized.");
+    if (!notionPageId) {
+        throw new Error("Notion page ID is required.");
+    }
+
+    try {
+        const { data, error } = await supabase
+            .from('item_mappings')
+            .select(`
+                *,
+                site_integrations!inner(
+                    id,
+                    user_id,
+                    webflow_auth_id,
+                    webflow_site_id,
+                    notion_auth_id,
+                    status
+                )
+            `)
+            .eq('notion_page_id', notionPageId)
+            .eq('site_integrations.status', 'active')
+            .single();
+
+        if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found
+            throw error;
+        }
+
+        return data;
+    } catch (error) {
+        console.error('Error getting item mapping by notion page ID:', error.message);
+        return null;
+    }
+}
+
+/**
+ * Gets collection mapping information for a site integration
+ * @param {number} siteIntegrationId - The site integration ID
+ * @param {string} notionDatabaseId - The Notion database ID
+ * @returns {Promise<object|null>} - The collection mapping or null if not found
+ */
+export async function get_collection_mapping_by_notion_db_id(siteIntegrationId, notionDatabaseId) {
+    if (!supabase) throw new Error("Supabase client not initialized.");
+    if (!siteIntegrationId || !notionDatabaseId) {
+        throw new Error("Site integration ID and Notion database ID are required.");
+    }
+
+    try {
+        const { data, error } = await supabase
+            .from('collection_sync_mappings')
+            .select('*')
+            .eq('site_integration_id', siteIntegrationId)
+            .eq('notion_database_id', notionDatabaseId)
+            .eq('is_active', true)
+            .single();
+
+        if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found
+            throw error;
+        }
+
+        return data;
+    } catch (error) {
+        console.error('Error getting collection mapping by notion database ID:', error.message);
+        return null;
+    }
+}
+
+/**
+ * Deletes an item mapping
+ * @param {string} notionPageId - The Notion page ID
+ * @returns {Promise<boolean>} - True on success, false on failure
+ */
+export async function delete_item_mapping_by_notion_page_id(notionPageId) {
+    if (!supabase) throw new Error("Supabase client not initialized.");
+    if (!notionPageId) {
+        throw new Error("Notion page ID is required.");
+    }
+
+    try {
+        const { error } = await supabase
+            .from('item_mappings')
+            .delete()
+            .eq('notion_page_id', notionPageId);
+
+        if (error) {
+            console.error('Error deleting item mapping:', error);
+            return false;
+        }
+
+        console.log(`[Item Mapping] Deleted mapping for Notion page ${notionPageId}`);
+        return true;
+    } catch (error) {
+        console.error('Error deleting item mapping:', error.message);
+        return false;
+    }
+} 
